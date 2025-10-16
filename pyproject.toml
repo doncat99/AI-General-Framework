@@ -1,0 +1,106 @@
+[tool.poetry]
+name = "General Framework"
+version = "0.1.0"
+description = "Minimal async FastAPI + PostgreSQL + MLflow template"
+authors = ["don <don@neuraedge.ai>"]
+license = "MIT"
+readme = "README.md"
+package-mode = false
+
+[tool.poetry.dependencies]
+python = ">=3.11,<3.14"
+python-dotenv = "^1.1.1"
+ipython = "^9.5.0"
+
+loguru = "^0.7.3"
+alembic = "^1.16.5"
+asyncpg = "^0.30.0"
+bcrypt = "^4.3.0"
+fastapi = "^0.116.1"
+pydantic = { extras = ["dotenv", "email"], version = "^2.11.7" }
+pydantic-settings = "^2.10.1"
+pyjwt = "^2.10.1"
+python-multipart = "^0.0.20"
+sqlalchemy = { extras = ["asyncio"], version = "^2.0.43" }
+
+langfuse = { extras = ["gateway", "genai"], version = "^3.3.4" }
+instructor = "^1.11.3"
+litellm = "^1.77.1"
+google-adk = "^1.16.0"
+a2a-sdk = { extras = ["grpc", "http-server"], version = "^0.3.5" }
+openinference-instrumentation-google-adk = "^0.1.4"
+openai = "^1.107.1"
+fastmcp = "^2.12.3"
+mcp = { extras = ["cli"], version = "^1.14.0" }
+
+portalocker = "^3.2.0"
+json-repair = "^0.39.1"
+unidecode = "^1.4.0"
+nltk = "^3.9.1"
+pyspellchecker = "^0.8.3"
+pymupdf = "^1.26.4"
+
+sentence-transformers = "^5.1.1"
+chromadb = { extras = ["duckdb+parquet"], version = "^1.1.1" }
+mem0ai = { extras = ["graph"], version = "^0.1.118" }
+
+
+[tool.poetry.group.dev.dependencies]
+coverage = "^7.10.6"
+freezegun = "^1.5.5"
+greenlet = "^3.2.4"
+httpx = "^0.28.1"
+mypy = "^1.17.1"
+types-requests = "^2.32.4.20250809"
+pre-commit = "^4.3.0"
+pytest = "^8.4.2"
+pytest-asyncio = "^1.1.0"
+pytest-cov = "^7.0.0"
+pytest-xdist = "^3.8.0"
+ruff = "^0.13.0"
+uvicorn = { extras = ["standard"], version = "^0.35.0" }
+
+[[tool.poetry.source]]
+name = "pytorch-gpu-src"
+url = "https://download.pytorch.org/whl/cpu"
+priority = "explicit"
+
+[build-system]
+build-backend = "poetry.core.masonry.api"
+requires = ["poetry-core>=1.0.0"]
+
+[tool.pytest.ini_options]
+addopts = "-vv -n auto --cov --cov-report xml --cov-report term-missing --cov-fail-under=100"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_mode = "auto"
+testpaths = ["app/tests"]
+
+[tool.coverage.run]
+concurrency = ["greenlet"]
+omit = ["app/tests/*"]
+source = ["app"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = false  # Relax overall strictness
+warn_return_any = false
+warn_unused_configs = true
+disallow_untyped_defs = false  # Not Require function annotations
+disallow_incomplete_defs = false  # Allow partial annotations
+check_untyped_defs = false  # Skip checking untyped functions
+disallow_untyped_calls = false  # Allow untyped calls
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = false  # Allow implicit optionals
+strict_equality = false
+strict_concatenate = false  # Relax string concatenation
+ignore_missing_imports = true  # Ignore missing stubs for third-party libs
+disable_error_code = ["arg-type", "union-attr", "attr-defined"]
+
+[tool.ruff]
+target-version = "py313"
+
+[tool.ruff.lint]
+# pycodestyle, pyflakes, isort, pylint, pyupgrade
+ignore = ["E501"]
+select = ["E", "F", "I", "PL", "UP", "W"]
