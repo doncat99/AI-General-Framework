@@ -5,8 +5,14 @@ import os
 import sys
 import asyncio
 import argparse
-from typing import Dict, Any, Optional
+from typing import Optional
 from loguru import logger
+
+# import warnings
+# # ---- optional: squelch known deprecation spam in 3.13 stacks ----
+# warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"^google\.adk\.runners$")
+# warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"^httpx\._models$")
+# warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"^aiohttp\.connector$")
 
 # --------- LOGGING ---------
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
@@ -19,23 +25,16 @@ logger.remove()
 logger.add(lambda m: print(m, end=""), level=LOG_LEVEL, format=LOG_FORMAT, enqueue=False)
 
 
-# ========== OPTIONAL MEM0 ==========
-def _load_mem0_client():
-    try:
-        from mem0 import Memory  # type: ignore
-        return Memory
-    except Exception as e:
-        logger.warning(f"mem0 not available: {e}")
-        return None
-
-
 # ========== INGEST HELPERS ==========
 def _build_ingest_pipeline(args):
+    """
+    Wire the ingest pipeline on demand. Requires your assistant ingest modules.
+    """
     from agents.assistant.ingest.pipeline import IngestPipeline
     from agents.assistant.ingest.sources.json_roadmap import JSONRoadmapSource
 
     PDFSource = None
-    if args.pdf:
+    if getattr(args, "pdf", None):
         try:
             from agents.assistant.ingest.sources.pdf_pymupdf import PDFPyMuPDFSource as _PDF
             PDFSource = _PDF
@@ -78,48 +77,28 @@ def _build_ingest_pipeline(args):
     return IngestPipeline(source, sinks)
 
 
-# ========== TOOL LOADING ==========
-def _load_tools() -> Dict[str, Any]:
-    tools: Dict[str, Any] = {}
-    # builtin
-    try:
-        from agents.assistant.tools.builtin_tools import builtin_tools
-        tools.update(builtin_tools())
-    except Exception as e:
-        logger.warning(f"builtin tools not available: {e}")
-
-    # external (optional)
-    try:
-        from agents.assistant.tools.external_loader import load_external_tools  # if you created it
-        tools.update(load_external_tools())
-    except Exception:
-        try:
-            from agents.assistant.tools.external_loader import load_external_tools
-            tools.update(load_external_tools())
-        except Exception as e:
-            logger.info(f"No external tools loaded: {e}")
-
-    logger.info(f"Loaded {len(tools)} tool(s).")
-    return tools
+# ========== ASSISTANT ==========
+async def _assistant_once(prompt: str) -> str:
+    """
+    One-shot ask via AssistantAgent (centralizes prompts, tools, mem0, RAG).
+    """
+    from agents.assistant.agent import AssistantAgent
+    agent = AssistantAgent(
+        model_name=os.getenv("GOOGLE_MODEL", "google/gemini-2.5-flash-preview-09-2025"),
+        enable_rag=False,  # flip on if a retriever is available
+    )
+    return await agent.ainvoke(user_id="cli", user_message=prompt)
 
 
-# ========== ADK ASSISTANT ==========
-async def _assistant_once(prompt: str, system: Optional[str]) -> str:
-    from agents.assistant.adk_client import ADKClient
-    client = ADKClient(model_name="google/gemini-2.5-flash-preview-09-2025")  # ADK-only per your design
-    for name, fn in _load_tools().items():
-        client.register_tool(name, fn)
-    return await client.run(prompt=prompt, system_prompt=system or "You are a helpful assistant.")
-
-
-async def _assistant_chat(system: Optional[str], use_mem0_ctx: bool, save_mem0: bool, top_k: int) -> None:
-    from agents.assistant.adk_client import ADKClient
-    Memory = _load_mem0_client()
-    mem = Memory() if (Memory and (use_mem0_ctx or save_mem0)) else None
-
-    client = ADKClient()
-    for name, fn in _load_tools().items():
-        client.register_tool(name, fn)
+async def _assistant_chat(use_mem0_ctx: bool, save_mem0: bool, top_k: int) -> None:
+    """
+    Multi-turn REPL that can optionally include mem0 context and save QA to mem0.
+    """
+    from agents.assistant.agent import AssistantAgent
+    agent = AssistantAgent(
+        model_name=os.getenv("GOOGLE_MODEL", "google/gemini-2.5-flash-preview-09-2025"),
+        enable_rag=False,
+    )
 
     print("chat mode. type ':q' or ':quit' to exit.")
     while True:
@@ -132,33 +111,19 @@ async def _assistant_chat(system: Optional[str], use_mem0_ctx: bool, save_mem0: 
             print("bye.")
             return
 
-        sys_msg = system or "You are a concise, helpful assistant."
-        if mem and use_mem0_ctx:
-            try:
-                hits = mem.search(query=user, top_k=top_k) or []
-                memory_lines = []
-                for h in hits:
-                    txt = h.get("memory") or h.get("text") or ""
-                    if txt:
-                        memory_lines.append(f"- {txt}")
-                if memory_lines:
-                    sys_msg += "\n\nRelevant user memory:\n" + "\n".join(memory_lines)
-            except Exception as e:
-                logger.warning(f"mem0 search failed: {e}")
-
         try:
-            answer = await client.run(prompt=user, system_prompt=sys_msg)
+            answer = await agent.ainvoke(
+                user_id="cli",
+                user_message=user,
+                use_mem0_ctx=use_mem0_ctx,
+                save_mem0=save_mem0,
+                mem_k=top_k,
+            )
         except Exception as e:
             logger.error(f"Assistant run failed: {e}")
             answer = "Sorry — I had trouble answering that."
 
         print(f"Assistant: {answer}")
-
-        if mem and save_mem0:
-            try:
-                mem.add(f"Q: {user}\nA: {answer}")
-            except Exception as e:
-                logger.warning(f"mem0 save failed: {e}")
 
 
 # ========== MENU (INTERACTIVE) ==========
@@ -222,31 +187,37 @@ def _menu_ingest():
 def _menu_ask():
     print("\n== Ask (single turn) ==")
     prompt = _input_nonempty("Prompt: ")
-    system = input("System (optional): ").strip() or None
-    txt = asyncio.run(_assistant_once(prompt=prompt, system=system))
+    txt = asyncio.run(_assistant_once(prompt=prompt))
     print(f"\nAssistant:\n{txt}\n")
 
 def _menu_chat():
     print("\n== Chat (multi-turn) ==")
-    system = input("System (optional): ").strip() or None
     use_ctx = _yes_no("Use mem0 context?", default_no=True)
     save = _yes_no("Save Q/A to mem0?", default_no=True)
     try:
         top_k = int(input("mem0 top_k [5]: ").strip() or "5")
     except ValueError:
         top_k = 5
-    asyncio.run(_assistant_chat(system, use_ctx, save, top_k))
+    asyncio.run(_assistant_chat(use_ctx, save, top_k))
 
 def _menu_tools():
     print("\n== Tools ==")
-    tools = _load_tools()
-    if not tools:
+    try:
+        from agents.assistant.agent import AssistantAgent
+        agent = AssistantAgent(enable_rag=False)
+        names = agent.list_tools()
+    except Exception as e:
+        logger.warning(f"Failed to list tools: {e}")
+        names = []
+
+    if not names:
         print("No tools found.\n")
         return
     print("Available tools:")
-    for n in sorted(tools.keys()):
+    for n in names:
         print(f" - {n}")
     print("")
+
 
 def interactive_menu():
     while True:
@@ -292,12 +263,10 @@ def main():
     # ask (single-turn)
     pa = sub.add_parser("ask", help="Ask the assistant once")
     pa.add_argument("--prompt", required=True)
-    pa.add_argument("--system", default=None)
 
     # chat (multi-turn REPL)
     pc = sub.add_parser("chat", help="Interactive assistant chat")
-    pc.add_argument("--system", default=None)
-    pc.add_argument("--mem0-context", action="store_true", help="Include top-k mem0 memory in system prompt")
+    pc.add_argument("--mem0-context", action="store_true", help="Include top-k mem0 memory in the prompt")
     pc.add_argument("--mem0-save", action="store_true", help="Save Q/A to mem0")
     pc.add_argument("--top-k", type=int, default=5)
 
@@ -317,12 +286,12 @@ def main():
         return
 
     if args.cmd == "ask":
-        text = asyncio.run(_assistant_once(prompt=args.prompt, system=args.system))
+        text = asyncio.run(_assistant_once(prompt=args.prompt))
         print(text)
         return
 
     if args.cmd == "chat":
-        asyncio.run(_assistant_chat(args.system, args.mem0_context, args.mem0_save, args.top_k))
+        asyncio.run(_assistant_chat(args.mem0_context, args.mem0_save, args.top_k))
         return
 
     if args.cmd == "tools":

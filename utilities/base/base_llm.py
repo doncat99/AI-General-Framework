@@ -83,7 +83,7 @@ class BaseLLM:
         # Raw client (no Instructor patching here)
         self.client = AsyncOpenAI(
             api_key=api_key or config.OPEN_ROUTER_API_KEY,
-            base_url=base_url or config.OPEN_ROUTER_API_BASE,
+            base_url=base_url or config.OPEN_ROUTER_BASE_URL,
         )
         self.use_cache = use_cache
         self.cache_dir = cache_dir

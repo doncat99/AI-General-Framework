@@ -6,9 +6,9 @@ from app.api.api_router import api_router, auth_router
 from app.core.config import get_settings
 
 app = FastAPI(
-    title="OntoSynth",
+    title="AI-General-Framework",
     version="6.1.0",
-    description="https://github.com/doncat99/OntoSynth",
+    description="https://github.com/doncat99/AI-General-Framework",
     openapi_url="/openapi.json",
     docs_url="/",
 )

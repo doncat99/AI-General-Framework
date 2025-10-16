@@ -22,7 +22,7 @@ class Config:
     DOCUMENT_REGISTRY_PATH = os.path.join(USER_FILES, "registry")
     
     OPEN_ROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
-    OPEN_ROUTER_API_BASE: str = os.getenv("OPENROUTER_API_BASE", "https://openrouter.ai/api/v1")
+    OPEN_ROUTER_BASE_URL: str = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
     GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY", "")
     HOST_AGENT_PORT: int = os.getenv("DB_URL", 8080)
     POST_DESIGN_AGENT_PORT: int = os.getenv("POST_DESIGN_AGENT_PORT", 10000)

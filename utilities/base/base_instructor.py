@@ -32,7 +32,7 @@ class BaseInstructor(BaseLLM):
             use_cache=use_cache,
             cache_dir=cache_dir,
             api_key=api_key or config.OPEN_ROUTER_API_KEY,
-            base_url=base_url or config.OPEN_ROUTER_API_BASE,
+            base_url=base_url or config.OPEN_ROUTER_BASE_URL,
         )
         # Patch the ALREADY-initialized AsyncOpenAI client
         # apatch returns an Async client; no need to call patch() again

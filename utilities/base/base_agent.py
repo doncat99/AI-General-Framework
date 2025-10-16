@@ -125,7 +125,7 @@ class BaseAgent:
             model=LiteLlm(
                 model=model_id,
                 api_key=config.OPEN_ROUTER_API_KEY,
-                api_base=config.OPEN_ROUTER_API_BASE,
+                api_base=config.OPEN_ROUTER_BASE_URL,
             ),
             instruction=self._instruction,
             tools=self.tools,

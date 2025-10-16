@@ -25,7 +25,7 @@ agent = Agent(
         # Explicitly provide the API key from environment variables
         api_key=config.OPEN_ROUTER_API_KEY,
         # Explicitly provide the OpenRouter API base URL
-        api_base=config.OPEN_ROUTER_API_BASE,
+        api_base=config.OPEN_ROUTER_BASE_URL,
     ),
     instruction="Always greet using the say_hello tool.",
     tools=[say_hello],
