@@ -1,5 +1,6 @@
 # agents/assistant/retrievers/chroma_retriever.py
 from __future__ import annotations
+import os
 from typing import Callable, List, Dict, Any, Optional
 from loguru import logger
 
@@ -18,7 +19,7 @@ def openai_embedder(model: str = "text-embedding-3-small") -> EmbeddingsFn:
     except Exception as e:
         raise RuntimeError("openai package is required for openai_embedder") from e
 
-    client = OpenAI()
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), base_url=os.getenv("OPENAI_Base_URL"))
 
     def _embed(texts: List[str]) -> List[List[float]]:
         if not texts:

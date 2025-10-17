@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 from .agent import AssistantAgent
-from .config import DEFAULT_USER_ID
+from .setting import DEFAULT_USER_ID
 
 app = FastAPI(title="ADK + mem0 Assistant", version="0.1.0")
 agent = AssistantAgent()

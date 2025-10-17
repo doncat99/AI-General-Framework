@@ -6,6 +6,7 @@ import sys
 import asyncio
 import argparse
 from typing import Optional
+
 from loguru import logger
 
 # import warnings
@@ -78,26 +79,40 @@ def _build_ingest_pipeline(args):
 
 
 # ========== ASSISTANT ==========
-async def _assistant_once(prompt: str) -> str:
+async def _assistant_once(prompt: str, *, persona: str = "secretary", verbosity: str = "normal") -> str:
     """
     One-shot ask via AssistantAgent (centralizes prompts, tools, mem0, RAG).
     """
     from agents.assistant.agent import AssistantAgent
+    # model = os.getenv("GOOGLE_MODEL", "google/gemini-2.5-flash-preview-09-2025")
+    model = "openai/gpt-4.1-mini"
     agent = AssistantAgent(
-        model_name=os.getenv("GOOGLE_MODEL", "google/gemini-2.5-flash-preview-09-2025"),
+        model_name=model,
         enable_rag=False,  # flip on if a retriever is available
+        persona=persona,
+        verbosity=verbosity,
     )
     return await agent.ainvoke(user_id="cli", user_message=prompt)
 
 
-async def _assistant_chat(use_mem0_ctx: bool, save_mem0: bool, top_k: int) -> None:
+async def _assistant_chat(
+    persona: str,
+    verbosity: str,
+    use_mem0_ctx: bool,
+    save_mem0: bool,
+    top_k: int,
+) -> None:
     """
     Multi-turn REPL that can optionally include mem0 context and save QA to mem0.
     """
     from agents.assistant.agent import AssistantAgent
+    # model = os.getenv("GOOGLE_MODEL", "google/gemini-2.5-flash-preview-09-2025")
+    model = "openai/gpt-4.1-mini"
     agent = AssistantAgent(
-        model_name=os.getenv("GOOGLE_MODEL", "google/gemini-2.5-flash-preview-09-2025"),
+        model_name=model,
         enable_rag=False,
+        persona=persona,
+        verbosity=verbosity,
     )
 
     print("chat mode. type ':q' or ':quit' to exit.")
@@ -187,6 +202,7 @@ def _menu_ingest():
 def _menu_ask():
     print("\n== Ask (single turn) ==")
     prompt = _input_nonempty("Prompt: ")
+    # Menu uses defaults (secretary/normal)
     txt = asyncio.run(_assistant_once(prompt=prompt))
     print(f"\nAssistant:\n{txt}\n")
 
@@ -198,7 +214,8 @@ def _menu_chat():
         top_k = int(input("mem0 top_k [5]: ").strip() or "5")
     except ValueError:
         top_k = 5
-    asyncio.run(_assistant_chat(use_ctx, save, top_k))
+    # Menu uses defaults (secretary/normal)
+    asyncio.run(_assistant_chat("secretary", "normal", use_ctx, save, top_k))
 
 def _menu_tools():
     print("\n== Tools ==")
@@ -263,12 +280,16 @@ def main():
     # ask (single-turn)
     pa = sub.add_parser("ask", help="Ask the assistant once")
     pa.add_argument("--prompt", required=True)
+    pa.add_argument("--persona", choices=["secretary", "executive", "tutor"], default="secretary")
+    pa.add_argument("--verbosity", choices=["brief", "normal", "thorough"], default="normal")
 
     # chat (multi-turn REPL)
     pc = sub.add_parser("chat", help="Interactive assistant chat")
     pc.add_argument("--mem0-context", action="store_true", help="Include top-k mem0 memory in the prompt")
     pc.add_argument("--mem0-save", action="store_true", help="Save Q/A to mem0")
     pc.add_argument("--top-k", type=int, default=5)
+    pc.add_argument("--persona", choices=["secretary", "executive", "tutor"], default="secretary")
+    pc.add_argument("--verbosity", choices=["brief", "normal", "thorough"], default="normal")
 
     # tools (list)
     sub.add_parser("tools", help="List available tools")
@@ -286,12 +307,12 @@ def main():
         return
 
     if args.cmd == "ask":
-        text = asyncio.run(_assistant_once(prompt=args.prompt))
+        text = asyncio.run(_assistant_once(prompt=args.prompt, persona=args.persona, verbosity=args.verbosity))
         print(text)
         return
 
     if args.cmd == "chat":
-        asyncio.run(_assistant_chat(args.mem0_context, args.mem0_save, args.top_k))
+        asyncio.run(_assistant_chat(args.persona, args.verbosity, args.mem0_context, args.mem0_save, args.top_k))
         return
 
     if args.cmd == "tools":

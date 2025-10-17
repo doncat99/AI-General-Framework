@@ -1,6 +1,9 @@
 # agents/assistant/adk_client.py
 from __future__ import annotations
-from typing import Callable, Iterable, Any, Optional, Mapping
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
+from typing import Callable, Iterable, Any, Optional, Mapping, Dict
 import os
 import inspect
 from loguru import logger
@@ -15,52 +18,52 @@ def _normalize_name(name: str | None) -> str:
     return base or "tool"
 
 
-def _ensure_async(fn: Callable[..., Any]) -> Callable[..., Any]:
-    """Wrap sync to async; preserve docstring."""
-    if inspect.iscoroutinefunction(fn):
-        return fn
-
-    async def _aw(*args, __fn=fn, **kwargs):
-        res = __fn(*args, **kwargs)
-        if inspect.isawaitable(res):
-            return await res
-        return res
-
-    _aw.__doc__ = getattr(fn, "__doc__", None)
-    return _aw
-
-
-def _force_func_name(fn: Callable[..., Any], name: str) -> Callable[..., Any]:
+def _mk_async_named(handler: Callable[..., Any], tool_name: str) -> Callable[..., Any]:
     """
-    Ensure the callable's __name__/__qualname__ are exactly `name`.
-    If we cannot mutate, return a thin async wrapper with the desired identity.
+    Create a clean async wrapper with a SIMPLE signature so ADK can parse it:
+        async def tool(args: dict) -> dict:
+            ...
+    No defaulted closure args (like __fn=handler), so no param pollution.
     """
-    try:
-        fn.__name__ = name
-        fn.__qualname__ = name
-        return fn
-    except Exception:
-        async def _wrapper(*args, __fn=fn, **kwargs):
-            res = __fn(*args, **kwargs)
+    if inspect.iscoroutinefunction(handler):
+        async def tool(args: Any):
+            return await handler(args)
+    else:
+        async def tool(args: Any):
+            res = handler(args)
             if inspect.isawaitable(res):
                 return await res
             return res
-        _wrapper.__name__ = name
-        _wrapper.__qualname__ = name
-        _wrapper.__doc__ = getattr(fn, "__doc__", None)
-        return _wrapper
+
+    tool.__name__ = tool_name
+    tool.__qualname__ = tool_name
+    tool.__doc__ = getattr(handler, "__doc__", None)
+    # keep a reference for duplicate filtering
+    setattr(tool, "__wrapped_handler__", handler)
+    return tool
+
+
+def _ensure_object_schema(params: Dict[str, Any] | None) -> Dict[str, Any]:
+    """
+    Normalize a function-tool parameters schema to JSON Schema object form.
+    Accepts shapes like {"properties":{...},"required":[...]} and injects type=object.
+    """
+    params = dict(params or {})
+    if "type" not in params:
+        params["type"] = "object"
+    if "properties" not in params:
+        params["properties"] = {}
+    if "required" not in params:
+        params["required"] = []
+    return params
 
 
 class ADKClient(BaseAgent):
     """
-    ADK-only client built on BaseAgent (Google ADK + LiteLLM via OpenRouter).
+    ADK-only client built on BaseAgent.
 
-    - Keeps a single underlying ADK agent/session.
-    - Tools can be registered dynamically (delegates to BaseAgent.add_tool()).
-    - run(prompt, system_prompt=...) lets you pass a system message at call-time.
-
-    Model resolution order:
-      explicit model_name -> env GOOGLE_MODEL -> env ADK_MODEL -> "google/gemini-1.5-flash"
+    Supports schema registration when BaseAgent exposes it; otherwise falls back to
+    a simple wrapper signature so ADK's auto function calling can infer cleanly.
     """
 
     def __init__(
@@ -85,7 +88,7 @@ class ADKClient(BaseAgent):
         # Try to source a project-wide default system prompt; fall back if missing
         default_instruction = "You are a helpful, concise assistant."
         try:
-            from agents.assistant.prompts.prompt import get_system_prompt  # optional
+            from agents.assistant.prompts.prompt import get_system_prompt
             default_instruction = get_system_prompt() or default_instruction
         except Exception:
             pass
@@ -97,7 +100,7 @@ class ADKClient(BaseAgent):
             agent_name=agent_name,
             model_name=resolved_model,
             instruction=resolved_instruction,
-            tools=[],  # start empty; you can register later
+            tools=[],
             app_name=app_name,
             user_id=user_id,
             session_id=session_id,
@@ -107,102 +110,213 @@ class ADKClient(BaseAgent):
 
         # Track used tool names to avoid ADK "Duplicate function declaration"
         self._used_tool_names: set[str] = set()
+        # Track normalized-name collisions to skip alias duplicates (e.g., memory_upsert vs memory.upsert)
+        self._normalized_names: set[str] = set()
+        # Track registered callables to avoid double-registration by identity
+        self._registered_handler_ids: set[int] = set()
 
         logger.info(
             f"ADKClient initialized (model='{resolved_model}', agent='{agent_name}', app='{app_name}')"
         )
 
-    # ---------- name utilities ----------
+    # ---------- name & duplicate utilities ----------
+
+    def _maybe_skip_alias(self, proposed: str) -> bool:
+        """
+        If a proposed name normalizes to a name we've already registered,
+        treat it as an alias collision and skip the duplicate registration.
+        Avoids creating memory_upsert_2 when both memory_upsert and memory.upsert are present.
+        """
+        base = _normalize_name(proposed)
+        if base in self._normalized_names:
+            logger.debug(f"Skipping duplicate alias '{proposed}' (normalized='{base}')")
+            return True
+        return False
 
     def _dedupe_name(self, proposed: str) -> str:
         base = _normalize_name(proposed)
         if base not in self._used_tool_names:
             self._used_tool_names.add(base)
+            self._normalized_names.add(base)
             return base
+        # True name collision with a different handler; suffix
         i = 2
         while f"{base}_{i}" in self._used_tool_names:
             i += 1
         final = f"{base}_{i}"
         self._used_tool_names.add(final)
+        self._normalized_names.add(final)
         return final
 
-    # ---------- Tool registration ----------
+    def _already_registered_handler(self, handler: Callable[..., Any]) -> bool:
+        hid = id(handler)
+        if hid in self._registered_handler_ids:
+            return True
+        self._registered_handler_ids.add(hid)
+        return False
 
-    def register_tool(self, *args) -> None:
+    def _supports_schema_registration(self) -> bool:
         """
-        Accept both:
+        Return True if BaseAgent exposes a schema-capable API.
+        Prefer add_function_tool; otherwise verify add_tool signature supports 4 args.
+        """
+        if hasattr(self, "add_function_tool"):
+            return True
+        add_tool = getattr(self, "add_tool", None)
+        if not callable(add_tool):
+            return False
+        try:
+            sig = inspect.signature(add_tool)
+            # For a bound method, required positional params exclude 'self'.
+            req_pos = [
+                p for p in sig.parameters.values()
+                if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+                and p.default is inspect._empty
+            ]
+            # Expecting (name, description, parameters, handler) → 4 required args
+            return len(req_pos) >= 4 or any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in sig.parameters.values())
+        except Exception:
+            return False
+
+    def _register_with_schema(self, tool_name: str, description: str, parameters: Dict[str, Any], handler: Callable[..., Any]) -> bool:
+        """
+        Try all known schema-bearing registrations. Return True on success.
+        """
+        if not self._supports_schema_registration():
+            return False
+
+        parameters = _ensure_object_schema(parameters)
+
+        # Preferred: dedicated function-tool API if present
+        if hasattr(self, "add_function_tool"):
+            try:
+                self.add_function_tool(tool_name, description, parameters, handler)
+                logger.info(f"Registered tool (schema via add_function_tool): {tool_name}")
+                return True
+            except Exception as e:
+                logger.debug(f"add_function_tool failed for {tool_name}: {e}")
+
+        # Fallback schema path via add_tool(name, desc, params, handler) if supported
+        add_tool = getattr(self, "add_tool", None)
+        if callable(add_tool):
+            try:
+                add_tool(tool_name, description, parameters, handler)  # type: ignore[misc]
+                logger.info(f"Registered tool (schema via add_tool): {tool_name}")
+                return True
+            except TypeError as e:
+                # Don't escalate — many BaseAgent impls only accept a single callable here.
+                logger.debug(f"schema add_tool failed for {tool_name}: {e}")
+            except Exception as e:
+                logger.debug(f"schema add_tool failed for {tool_name}: {e}")
+
+        return False
+
+    def register_tool(self, *args, **kwargs) -> None:
+        """
+        Accepted forms:
           - register_tool(func)
           - register_tool(name, func)
-        Ensures:
-          - unique, stable tool name (ADK schema id)
-          - callable is async
-          - callable object __name__/__qualname__ == exported tool name
+          - register_tool(name, description, parameters, handler)
+          - register_tool(name=..., description=..., parameters=..., handler=...)
+
+        If schema-based registration isn't supported by BaseAgent, we fallback to a simple
+        `(args: dict) -> dict` async wrapper so ADK auto-calling can parse the signature.
         """
-        if len(args) == 1:
-            func = args[0]
-            if not callable(func):
-                raise TypeError("Tool must be a callable.")
+        # ---- KW schema form ----
+        if kwargs:
+            name = kwargs.get("name")
+            description = kwargs.get("description", "") or ""
+            parameters = kwargs.get("parameters") or {}
+            handler = kwargs.get("handler")
+            if not (name and callable(handler)):
+                raise TypeError("Schema registration requires 'name' and callable 'handler'.")
 
-            proposed_name = getattr(func, "__tool_name__", None) or getattr(func, "__name__", None) or "tool"
-            tool_name = self._dedupe_name(str(proposed_name))
-
-            fn_async = _ensure_async(func)
-            fn_named = _force_func_name(fn_async, tool_name)
-
-            self.add_tool(fn_named)
-            logger.info(f"Registered tool: {tool_name} (total={len(self.tools)})")
-            return
-
-        if len(args) == 2:
-            name, func = args
-            if not callable(func):
-                raise TypeError("Tool must be a callable.")
+            # Skip alias duplicates (e.g., dotted vs underscore)
+            if self._maybe_skip_alias(str(name)):
+                return
+            if self._already_registered_handler(handler):
+                logger.debug(f"Skipping duplicate handler for '{name}' (already registered).")
+                return
 
             tool_name = self._dedupe_name(str(name))
+            # Prefer registering the raw handler with schema if supported
+            if self._register_with_schema(tool_name, description, parameters, handler):
+                return
 
-            fn_async = _ensure_async(func)
-            fn_named = _force_func_name(fn_async, tool_name)
-
-            self.add_tool(fn_named)
-            logger.info(f"Registered tool: {tool_name} (total={len(self.tools)})")
+            # Fallback: simple wrapper, no schema path
+            self.add_tool(_mk_async_named(handler, tool_name))
+            logger.info(f"Registered tool without explicit schema (fallback): {tool_name}")
             return
 
-        raise TypeError("register_tool expects (func) or (name, func)")
+        # ---- positional forms ----
+        if len(args) == 1 and callable(args[0]):
+            func = args[0]
+            # Avoid duplicate handlers
+            if self._already_registered_handler(func):
+                logger.debug("Skipping duplicate handler registration (func).")
+                return
+            proposed = getattr(func, "__tool_name__", None) or getattr(func, "__name__", None) or "tool"
+            if self._maybe_skip_alias(str(proposed)):
+                return
+            tool_name = self._dedupe_name(str(proposed))
+            self.add_tool(_mk_async_named(func, tool_name))
+            logger.info(f"Registered tool: {tool_name} (no explicit schema)")
+            return
+
+        if len(args) == 2 and callable(args[1]):
+            name, func = args  # type: ignore[misc]
+            if self._maybe_skip_alias(str(name)):
+                return
+            if self._already_registered_handler(func):
+                logger.debug(f"Skipping duplicate handler for '{name}'.")
+                return
+            tool_name = self._dedupe_name(str(name))
+            self.add_tool(_mk_async_named(func, tool_name))
+            logger.info(f"Registered tool: {tool_name} (no explicit schema)")
+            return
+
+        if len(args) == 4:
+            name, description, parameters, handler = args
+            if not callable(handler):
+                raise TypeError("handler must be callable")
+            if self._maybe_skip_alias(str(name)):
+                return
+            if self._already_registered_handler(handler):
+                logger.debug(f"Skipping duplicate handler for '{name}'.")
+                return
+            tool_name = self._dedupe_name(str(name))
+            if self._register_with_schema(tool_name, str(description or ""), dict(parameters or {}), handler):
+                return
+            # Fallback
+            self.add_tool(_mk_async_named(handler, tool_name))
+            logger.info(f"Registered tool without explicit schema (fallback): {tool_name}")
+            return
+
+        raise TypeError(
+            "register_tool expects one of: (func), (name, func), "
+            "(name, description, parameters, handler), or keyword schema."
+        )
 
     def register_tools(
         self,
         funcs: Iterable[Callable[..., Any]] | Mapping[str, Callable[..., Any]]
     ) -> None:
-        """
-        Register multiple tools.
-
-        - Iterable[callable]: each item is a tool function.
-        - Mapping[str, callable]: name->function mapping.
-        """
         if isinstance(funcs, Mapping):
             for name, fn in funcs.items():
+                # Skip alias duplicates by normalized name before calling register_tool
+                if self._maybe_skip_alias(str(name)):
+                    continue
                 self.register_tool(name, fn)
             return
-
         for fn in funcs:
             self.register_tool(fn)
 
-    # ---------- Convenience run ----------
-
     async def run(self, prompt: str, *, system_prompt: Optional[str] = None) -> str:
-        """
-        Single-turn ask; returns assistant text.
-        If system_prompt is provided, it is inlined at the top of the message.
-        Otherwise, uses the instruction from BaseAgent (which we set from prompts by default).
-        """
         if system_prompt:
             prompt = f"[SYSTEM]\n{system_prompt}\n\n[USER]\n{prompt}"
         txt = await self.run_async(prompt)
         return txt or "I don’t have a response yet."
 
-    # ---------- Optional helpers ----------
-
     def set_instruction(self, new_instruction: str) -> None:
-        """Update the system instruction for subsequent calls."""
         self.update_instruction(new_instruction)
         logger.info("Agent instruction updated.")
