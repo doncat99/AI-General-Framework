@@ -2,9 +2,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Iterable, Iterator, List, Optional, Union
 from pathlib import Path
-from loguru import logger
 
-# PyMuPDF
+from loguru import logger
 import fitz  # type: ignore
 
 

@@ -1,10 +1,12 @@
 from __future__ import annotations
+
 from typing import Iterator, Dict, Any
 import json
+
+from gateway.mem0.ingest.models import MemoryRecord
 from agents.assistant.ingest.sources.base import BaseSource
-from agents.assistant.ingest.models import MemoryRecord
 from agents.assistant.ingest.utils import chunk_text
-from agents.assistant.ingest.config import settings
+from agents.assistant.setting import settings
 
 class JSONRoadmapSource(BaseSource):
     def __init__(self, path: str) -> None:

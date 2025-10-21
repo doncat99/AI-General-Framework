@@ -1,42 +1,35 @@
-FROM python:3.13.7-slim-bookworm AS base
+# ---------- Base image ----------
+FROM python:3.13.7-slim-bookworm
 
 ENV PYTHONUNBUFFERED=1
-WORKDIR /build
+WORKDIR /app
 
-# Create requirements.txt file
-FROM base AS poetry
-RUN pip install poetry==2.1.3
-RUN poetry self add poetry-plugin-export
-COPY poetry.lock pyproject.toml ./
-RUN poetry export -o /requirements.txt --without-hashes
+# If you truly need no system packages, keep this empty.
+# Uncomment if you later need OS libs: gcc, libpq, etc.
+# RUN apt-get update && apt-get install -y --no-install-recommends \
+#     build-essential \
+#  && rm -rf /var/lib/apt/lists/*
 
-FROM base AS final
-COPY --from=poetry /requirements.txt .
+# ----- Hardcoded Python deps (ONLY what you want) -----
+# Web server runtime
+RUN python -m venv /venv && \
+    /venv/bin/pip install --upgrade pip && \
+    /venv/bin/pip install alembic==1.17.0 asyncpg==0.30.0 bcrypt==4.3.0 \
+     "pydantic[dotenv,email]"==2.12.3 pydantic-settings==2.11.0 pyjwt==2.10.1 \
+     fastapi==0.116.2 "sqlalchemy[asyncio]"==2.0.44 uvicorn==0.35.0 neo4j==5.28.2
 
-# Create venv, add it to path and install requirements
-RUN python -m venv /venv
 ENV PATH="/venv/bin:$PATH"
-RUN pip install -r requirements.txt
 
-# Install uvicorn server
-RUN pip install uvicorn[standard]
-
-# Copy the rest of app
+# ----- App files -----
 COPY app app
 COPY alembic alembic
 COPY alembic.ini .
-COPY pyproject.toml .
 COPY init.sh .
-
-# Expose port
-EXPOSE 8000
-
-# Make the init script executable
 RUN chmod +x ./init.sh
 
-# Set ENTRYPOINT to always run init.sh
-ENTRYPOINT ["./init.sh"]
+# ---------- Ports ----------
+EXPOSE 8000
 
-# Set CMD to uvicorn
-# /venv/bin/uvicorn is used because from entrypoint script PATH is new
-CMD ["/venv/bin/uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--loop", "uvloop"]
+# ---------- Entrypoint & CMD ----------
+ENTRYPOINT ["./init.sh"]
+CMD ["uvicorn","app.main:app","--host","0.0.0.0","--port","8000", "--workers", "2", "--loop", "uvloop"]

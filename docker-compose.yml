@@ -1,14 +1,3 @@
-# For local development, only database is running
-#
-# docker compose up -d
-# uvicorn app.main:app --reload
-#
-
-# Make sure to update the credential placeholders with your own secrets.
-# We mark them with # CHANGEME in the file below.
-# In addition, we recommend to restrict inbound traffic on the host to langfuse-web (port 3000) and minio (port 9090) only.
-# All other components are bound to localhost (127.0.0.1) to only accept connections from the local machine.
-# External connections from other machines will not be able to reach these services directly.
 services:
   app-postgres:
     restart: unless-stopped
@@ -23,20 +12,16 @@ services:
     env_file:
       - .env
     ports:
-      - "${DATABASE__PORT:-5432}:5432" # Default to 5432 if DATABASE__PORT is unset
+      - "${DATABASE__PORT:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DATABASE__USERNAME}"]
       interval: 5s
       timeout: 3s
-      retries: 10
+      retries: 1
     networks:
       - app-network
 
-# Make sure to update the credential placeholders with your own secrets.
-# We mark them with # CHANGEME in the file below.
-# In addition, we recommend to restrict inbound traffic on the host to langfuse-web (port 3000) and minio (port 9090) only.
-# All other components are bound to localhost (127.0.0.1) to only accept connections from the local machine.
-# External connections from other machines will not be able to reach these services directly.
+  # ---------------- Langfuse stack ----------------
   langfuse-worker:
     image: docker.io/langfuse/langfuse-worker:3
     restart: always
@@ -51,30 +36,32 @@ services:
         condition: service_healthy
     ports:
       - 127.0.0.1:3030:3030
+    networks:
+      - langfuse-network
     environment: &langfuse-worker-env
       NEXTAUTH_URL: http://localhost:3000
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/postgres # CHANGEME
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/postgres
       SALT: "mysalt" # CHANGEME
-      ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000" # CHANGEME: generate via `openssl rand -hex 32`
+      ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000" # CHANGEME
       TELEMETRY_ENABLED: ${TELEMETRY_ENABLED:-true}
       LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: ${LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES:-true}
       CLICKHOUSE_MIGRATION_URL: ${CLICKHOUSE_MIGRATION_URL:-clickhouse://clickhouse:9000}
       CLICKHOUSE_URL: ${CLICKHOUSE_URL:-http://clickhouse:8123}
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-clickhouse}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse} # CHANGEME
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse}
       CLICKHOUSE_CLUSTER_ENABLED: ${CLICKHOUSE_CLUSTER_ENABLED:-false}
       LANGFUSE_USE_AZURE_BLOB: ${LANGFUSE_USE_AZURE_BLOB:-false}
       LANGFUSE_S3_EVENT_UPLOAD_BUCKET: ${LANGFUSE_S3_EVENT_UPLOAD_BUCKET:-langfuse}
       LANGFUSE_S3_EVENT_UPLOAD_REGION: ${LANGFUSE_S3_EVENT_UPLOAD_REGION:-auto}
-      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID:-minio}
-      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY:-miniosecret} # CHANGEME
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID:-${MINIO_ROOT_USER}}
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY:-${MINIO_ROOT_PASSWORD}}
       LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: ${LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT:-http://minio:9000}
       LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: ${LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE:-true}
       LANGFUSE_S3_EVENT_UPLOAD_PREFIX: ${LANGFUSE_S3_EVENT_UPLOAD_PREFIX:-events/}
       LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: ${LANGFUSE_S3_MEDIA_UPLOAD_BUCKET:-langfuse}
       LANGFUSE_S3_MEDIA_UPLOAD_REGION: ${LANGFUSE_S3_MEDIA_UPLOAD_REGION:-auto}
-      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID:-minio}
-      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY:-miniosecret} # CHANGEME
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID:-${MINIO_ROOT_USER}}
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY:-${MINIO_ROOT_PASSWORD}}
       LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: ${LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT:-http://localhost:9090}
       LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: ${LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE:-true}
       LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: ${LANGFUSE_S3_MEDIA_UPLOAD_PREFIX:-media/}
@@ -84,14 +71,14 @@ services:
       LANGFUSE_S3_BATCH_EXPORT_REGION: ${LANGFUSE_S3_BATCH_EXPORT_REGION:-auto}
       LANGFUSE_S3_BATCH_EXPORT_ENDPOINT: ${LANGFUSE_S3_BATCH_EXPORT_ENDPOINT:-http://minio:9000}
       LANGFUSE_S3_BATCH_EXPORT_EXTERNAL_ENDPOINT: ${LANGFUSE_S3_BATCH_EXPORT_EXTERNAL_ENDPOINT:-http://localhost:9090}
-      LANGFUSE_S3_BATCH_EXPORT_ACCESS_KEY_ID: ${LANGFUSE_S3_BATCH_EXPORT_ACCESS_KEY_ID:-minio}
-      LANGFUSE_S3_BATCH_EXPORT_SECRET_ACCESS_KEY: ${LANGFUSE_S3_BATCH_EXPORT_SECRET_ACCESS_KEY:-miniosecret} # CHANGEME
+      LANGFUSE_S3_BATCH_EXPORT_ACCESS_KEY_ID: ${LANGFUSE_S3_BATCH_EXPORT_ACCESS_KEY_ID:-${MINIO_ROOT_USER}}
+      LANGFUSE_S3_BATCH_EXPORT_SECRET_ACCESS_KEY: ${LANGFUSE_S3_BATCH_EXPORT_SECRET_ACCESS_KEY:-${MINIO_ROOT_PASSWORD}}
       LANGFUSE_S3_BATCH_EXPORT_FORCE_PATH_STYLE: ${LANGFUSE_S3_BATCH_EXPORT_FORCE_PATH_STYLE:-true}
       LANGFUSE_INGESTION_QUEUE_DELAY_MS: ${LANGFUSE_INGESTION_QUEUE_DELAY_MS:-}
       LANGFUSE_INGESTION_CLICKHOUSE_WRITE_INTERVAL_MS: ${LANGFUSE_INGESTION_CLICKHOUSE_WRITE_INTERVAL_MS:-}
       REDIS_HOST: ${REDIS_HOST:-redis}
       REDIS_PORT: ${REDIS_PORT:-6379}
-      REDIS_AUTH: ${REDIS_AUTH:-myredissecret} # CHANGEME
+      REDIS_AUTH: ${REDIS_AUTH:-myredissecret}
       REDIS_TLS_ENABLED: ${REDIS_TLS_ENABLED:-false}
       REDIS_TLS_CA: ${REDIS_TLS_CA:-/certs/ca.crt}
       REDIS_TLS_CERT: ${REDIS_TLS_CERT:-/certs/redis.crt}
@@ -105,6 +92,8 @@ services:
     depends_on: *langfuse-depends-on
     ports:
       - 3000:3000
+    networks:
+      - langfuse-network
     environment:
       <<: *langfuse-worker-env
       NEXTAUTH_SECRET: mysecret # CHANGEME
@@ -124,33 +113,36 @@ services:
     user: "101:101"
     environment:
       CLICKHOUSE_DB: default
-      CLICKHOUSE_USER: clickhouse
-      CLICKHOUSE_PASSWORD: clickhouse # CHANGEME
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-clickhouse}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse}
     volumes:
       - langfuse_clickhouse_data:/var/lib/clickhouse
       - langfuse_clickhouse_logs:/var/log/clickhouse-server
     ports:
       - 127.0.0.1:8123:8123
       - 127.0.0.1:9000:9000
+    networks:
+      - langfuse-network
     healthcheck:
       test: wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 1
       start_period: 1s
 
   minio:
     image: docker.io/minio/minio
     restart: always
     entrypoint: sh
-    # create the 'langfuse' bucket before starting the service
     command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
     environment:
-      MINIO_ROOT_USER: minio
-      MINIO_ROOT_PASSWORD: miniosecret # CHANGEME
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-miniosecret}
     ports:
       - 9090:9000
       - 127.0.0.1:9091:9001
+    networks:
+      - langfuse-network
     volumes:
       - langfuse_minio_data:/data
     healthcheck:
@@ -163,16 +155,17 @@ services:
   redis:
     image: docker.io/redis:7
     restart: always
-    # CHANGEME: row below to secure redis password
     command: >
       --requirepass ${REDIS_AUTH:-myredissecret}
     ports:
       - 127.0.0.1:6379:6379
+    networks:
+      - langfuse-network
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 3s
       timeout: 10s
-      retries: 10
+      retries: 1
 
   postgres:
     image: docker.io/postgres:${POSTGRES_VERSION:-latest}
@@ -181,30 +174,221 @@ services:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 3s
       timeout: 3s
-      retries: 10
+      retries: 1
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres # CHANGEME
       POSTGRES_DB: postgres
     ports:
       - 127.0.0.1:5433:5432
+    networks:
+      - langfuse-network
     volumes:
       - langfuse_postgres_data:/var/lib/postgresql/data
 
+  # -------- Vector DB (Qdrant) [kept for your app if needed] --------
+  # qdrant:
+  #   image: qdrant/qdrant:latest
+  #   container_name: qdrant
+  #   restart: always
+  #   ports:
+  #     - "127.0.0.1:${QDRANT_HTTP_PORT:-6333}:6333"
+  #     - "127.0.0.1:${QDRANT_GRPC_PORT:-6334}:6334"
+  #   volumes:
+  #     - qdrant_storage:/qdrant/storage
+  #   healthcheck:
+  #     # test: curl -s http://localhost:6333/healthz | grep -q 'healthz check passed' || exit 1
+  #     # test: ["CMD-SHELL", "wget -qO- http://localhost:6333/readyz | grep -qi 'ready' || exit 1"]
+  #     test:
+  #       - CMD-SHELL
+  #       - >
+  #         if command -v wget >/dev/null 2>&1; then
+  #           wget -qO- http://127.0.0.1:6333/readyz >/dev/null;
+  #         elif command -v curl >/dev/null 2>&1; then
+  #           curl -fsS http://127.0.0.1:6333/readyz >/dev/null;
+  #         else
+  #           # Fallback: check port 6333 (0x18BD) is LISTENing via /proc
+  #           grep -q ":18BD" /proc/net/tcp;
+  #         fi
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 1
+  #   networks:
+  #     - app-network
+  #     - rag-network
+
+  # -------- LLM Runtime (Ollama) --------
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    healthcheck:
+      test: [ "CMD-SHELL", "bash", "-c", "{ printf >&3 'GET / HTTP/1.0\\r\\n\\r\\n'; cat <&3; } 3<>/dev/tcp/localhost/11434 | grep 'Ollama is' || exit 1"  ]
+      interval: 10s
+      timeout: 5s
+      retries: 1
+    networks:
+      - app-network
+      - rag-network
+
+  # -------- Graph DB (Neo4j) --------
+  neo4j:
+    image: neo4j:latest
+    container_name: neo4j
+    environment:
+      # Use .env to override in real deployments
+      NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-neo4j_local_dev_password}
+      # NEO4J_USER: ${NEO4J_USER:-neo4j}
+      # NEO4J_PASSWORD: ${NEO4J_PASSWORD:-neo4j_local_dev_password}
+      # NEO4JLABS_PLUGINS: '["apoc","n10s"]'
+      # NEO4J_apoc_export_file_enabled: "true"
+      # NEO4J_apoc_import_file_enabled: "true"
+      # NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
+    volumes:
+      - neo4j_conf:/conf/neo4j.conf # This is the main configuration file.
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+      - neo4j_plugins:/plugins
+    ports:
+      - "${NEO4J_HTTP_PORT:-7474}:7474"
+      - "${NEO4J_BOLT_PORT:-7687}:7687"
+    networks:
+      - app-network
+      - rag-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider localhost:${NEO4J_HTTP_PORT:-7474} || exit 1"]
+      # test: curl -i http://127.0.0.1:7474 2>&1 | grep -c -e '200 OK'
+      interval: 30s
+      timeout: 10s
+      retries: 1
+    restart: always
+
+  # -------- Mem0 gateway (embedded Chroma) --------
+  mem0:
+    build: ./gateway/mem0
+    container_name: rag_mem0
+    volumes:
+      # Persistent memory storage
+      - mem0_data:/app/data
+      # Shared logs for memory extraction
+      - rag_shared_logs:/shared/logs
+    environment:
+      # ---- LLM routing for extraction via OpenRouter (OpenAI-compatible) ----
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL}
+
+      # ---- Embeddings via Ollama ----
+      OLLAMA_HOST: ${OLLAMA_HOST}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}
+      OLLAMA_API_BASE: ${OLLAMA_API_BASE}
+      OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text}
+
+      # ---- Extraction model (OpenRouter id) ----
+      MEM0_EXTRACT_MODEL: ${MEM0_EXTRACT_MODEL:-openai/gpt-4o-mini}
+
+      # ---- Mem0 internal Chroma path ----
+      MEM0_CHROMA_PATH: ${MEM0_CHROMA_PATH:-/app/data/chroma_db}
+
+      # Standalone retriever (separate path to avoid Settings collisions)
+      CHROMA_RETR_PATH: ${CHROMA_RETR_PATH:-/app/data/chroma_retriever_db}
+      CHROMA_RETR_COLLECTION: ${CHROMA_RETR_COLLECTION:-rag_index}
+
+      # ---- Mem0/Chroma in-process ----
+      MEM0_DATA_DIR: ${MEM0_DATA_DIR:-/app/data}
+      MEM0_CONFIG_DIR: ${MEM0_CONFIG_DIR:-/app/config}
+      MEM0_COLLECTION: ${MEM0_COLLECTION:-rag_memories}
+
+      # ---- Optional Neo4j sink ----
+      NEO4J_URI: ${NEO4J_URI:-bolt://neo4j:7687}
+      NEO4J_USER: ${NEO4J_USER:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-neo4j_local_dev_password}
+      NEO4J_DB: ${NEO4J_DB:-neo4j}
+
+      # ---- API meta ----
+      API_VERSION: ${API_VERSION:-1.6.0}
+    ports:
+      - "${MEM0_PORT:-8001}:8001"
+    networks:
+      - rag-network
+    depends_on:
+      ollama:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    healthcheck:
+      # test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8001/health || exit 1"]
+      test:
+        - CMD-SHELL
+        - >
+          wget -q --server-response --method=GET -O /dev/null
+          http://127.0.0.1:8001/health 2>&1
+          | grep -m1 -E 'HTTP/1\.[01] 200' >/dev/null || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # -------- Your App --------
   app:
     build:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8000:8000"
+      - "${APP_PORT:-8000}:8000"
     env_file:
       - .env
+    environment:
+      # Graph DB
+      NEO4J_URI: ${NEO4J_URI:-bolt://neo4j:7687}
+      NEO4J_USER: ${NEO4J_USER:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-neo4j_local_dev_password}
+
+      # Primary DB
+      DATABASE__HOSTNAME: ${DATABASE__HOSTNAME}
+      DATABASE__USERNAME: ${DATABASE__USERNAME}
+      DATABASE__PASSWORD: ${DATABASE__PASSWORD}
+      DATABASE__PORT: ${DATABASE__PORT}
+      DATABASE__DB: ${DATABASE__DB}
+
+      # Security
+      SECURITY__JWT_SECRET_KEY: ${SECURITY__JWT_SECRET_KEY}
+      SECURITY__BACKEND_CORS_ORIGINS: ${SECURITY__BACKEND_CORS_ORIGINS}
+      SECURITY__ALLOWED_HOSTS: ${SECURITY__ALLOWED_HOSTS}
+
+      # Langfuse
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY}
+      LANGFUSE_HOST: ${LANGFUSE_HOST}
+
+      # Vector DB + LLM runtime (if your app uses them)
+      QDRANT_URL: ${QDRANT_URL:-http://qdrant:6333}
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+      OLLAMA_HOST: ${OLLAMA_HOST}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}
+      OLLAMA_API_BASE: ${OLLAMA_API_BASE}
+
+      # Internal Mem0 URL for pipeline -> server calls
+      MEM0_SERVER_URL: http://mem0:8001}
     depends_on:
       app-postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      # qdrant:
+      #   condition: service_healthy
+      ollama:
+        condition: service_healthy
+      mem0:
         condition: service_healthy
     restart: on-failure
     networks:
       - app-network
+      - rag-network
 
 volumes:
   app-data:
@@ -217,7 +401,27 @@ volumes:
     driver: local
   langfuse_minio_data:
     driver: local
+  mem0_data:
+    driver: local
+  rag_shared_logs:
+    driver: local
+  qdrant_storage:
+    driver: local
+  ollama_models:
+    driver: local
+  neo4j_conf:
+    driver: local
+  neo4j_data:
+    driver: local
+  neo4j_logs:
+    driver: local
+  neo4j_plugins:
+    driver: local
 
 networks:
   app-network:
     name: app-network
+  langfuse-network:
+    name: langfuse-network
+  rag-network:
+    name: rag-network

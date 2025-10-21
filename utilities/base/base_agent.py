@@ -1,5 +1,6 @@
 # utilities/base/base_agent.py
 from __future__ import annotations
+
 import os
 import pickle
 import hashlib
@@ -7,6 +8,8 @@ from typing import Optional, List, Callable, Any
 from pathlib import Path
 from functools import wraps
 import asyncio
+
+from loguru import logger
 
 from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 from google.adk.agents import LlmAgent as Agent
@@ -18,9 +21,18 @@ import litellm
 
 from config import config
 
-# set OPENINFERENCE_DISABLED=1 to disable tracing if needed
-if not config.OPENINFERENCE_DISABLED:
-    GoogleADKInstrumentor().instrument()
+
+# ---------------------------------------------------------------------------
+# Small helpers
+# ---------------------------------------------------------------------------
+
+def _as_bool(v: str | None) -> bool:
+    return (v or "").strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+# Activate OpenInference unless disabled via config/env
+# if not _as_bool(os.getenv("OPENINFERENCE_DISABLED")) and not _as_bool(os.getenv("OTEL_SDK_DISABLED")):
+GoogleADKInstrumentor().instrument()
 
 # optional: verbose HTTP/debug for LiteLLM routing
 if config.DEBUG:
@@ -29,6 +41,10 @@ if config.DEBUG:
     except Exception:
         pass
 
+
+# ---------------------------------------------------------------------------
+# Simple pickle cache decorator
+# ---------------------------------------------------------------------------
 
 def pickle_cache(cache_subdir: str):
     """Decorator to cache function results using pickle files on disk."""
@@ -51,6 +67,10 @@ def pickle_cache(cache_subdir: str):
     return decorator
 
 
+# ---------------------------------------------------------------------------
+# BaseAgent
+# ---------------------------------------------------------------------------
+
 class BaseAgent:
     """
     ADK-based base agent that supports dynamic tool updates.
@@ -58,14 +78,14 @@ class BaseAgent:
     Key points:
     - Builds one Agent/Runner up-front.
     - `set_tools` tries to update tools IN-PLACE (`self.agent.tools = ...`).
-      If the underlying ADK version requires a rebuild, we fall back to `_build_agent_and_runner()`.
+      If the ADK version refuses, we fall back to `_build_agent_and_runner()`.
     - Safe in both sync and async environments (lazy session creation).
     """
 
     def __init__(
         self,
         agent_name: str,
-        model_name: str,
+        model_name: Optional[str],
         instruction: str,
         tools: Optional[List[Callable[..., Any]]] = None,
         app_name: str = "default_app",
@@ -82,8 +102,10 @@ class BaseAgent:
 
         # Persist config for rebuilds or in-place updates
         self._agent_name = agent_name
-        self._model_name = model_name
-        self._instruction = instruction
+        self._model_name = model_name or ""
+        if not self._model_name:
+            raise ValueError("model_name must be provided")
+        self._instruction = instruction  # canonical "system prompt"
 
         # The current tool list we consider "source of truth"
         self.tools: List[Callable[..., Any]] = list(tools or [])
@@ -137,11 +159,7 @@ class BaseAgent:
     # ------------------------------------------------------------------
 
     def set_tools(self, tools: List[Callable[..., Any]]) -> None:
-        """
-        Replace the tool list.
-        1) Try to update in-place (`self.agent.tools = tools`).
-        2) If ADK or the pydantic model refuses, rebuild agent/runner.
-        """
+        """Replace the tool list (in-place if possible, otherwise rebuild)."""
         self.tools = list(tools or [])
         try:
             # Many ADK versions allow this (pydantic model kept mutable for lists)
@@ -172,17 +190,50 @@ class BaseAgent:
             self._build_agent_and_runner()
 
     # ------------------------------------------------------------------
-    # Run
+    # System prompt / instruction
+    # ------------------------------------------------------------------
+
+    def set_system_prompt(self, new_prompt: str) -> None:
+        """
+        Canonical way to set the agent/system prompt.
+        Tries to update the underlying ADK Agent in-place; rebuilds if required.
+        """
+        self._instruction = new_prompt or ""
+        try:
+            # Many ADK versions accept direct mutation of pydantic model fields
+            self.agent.instruction = self._instruction
+        except Exception:
+            # Fall back to a full rebuild to propagate the new instruction
+            self._build_agent_and_runner()
+        logger.info("[agent] System prompt updated.")
+
+    def set_instruction(self, new_instruction: str) -> None:
+        """Alias kept for callers that use 'instruction' terminology."""
+        self.set_system_prompt(new_instruction)
+
+    # ------------------------------------------------------------------
+    # Run (single entrypoint)
     # ------------------------------------------------------------------
 
     # @pickle_cache(cache_subdir="run_async")
-    async def run_async(self, message_text: str) -> Optional[str]:
+    async def run_async(self, message_text: str, *, system_prompt: Optional[str] = None) -> Optional[str]:
+        """
+        Main entrypoint. If `system_prompt` is provided, it is applied via set_system_prompt()
+        before running this turn (and persists for subsequent turns).
+        """
+        # Update system prompt if provided
+        if system_prompt is not None:
+            try:
+                self.set_system_prompt(system_prompt)
+            except Exception:
+                logger.debug("[agent] Could not set system prompt dynamically; continuing without it.")
+
         # If session creation was scheduled at __init__, await it now
         if self._session_task and not self._session_task.done():
             await self._session_task
 
         user_msg = types.Content(role="user", parts=[types.Part(text=message_text)])
-        final_text = None
+        final_text: Optional[str] = None
         try:
             async for event in self.runner.run_async(
                 user_id=self.user_id,
@@ -196,5 +247,5 @@ class BaseAgent:
                         final_text = None
             return final_text
         except Exception as e:
-            print(f"Error running agent: {e}")
+            logger.error(f"[agent] Error running agent: {e}")
             return None

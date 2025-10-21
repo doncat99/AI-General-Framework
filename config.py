@@ -28,8 +28,8 @@ class Config:
     POST_DESIGN_AGENT_PORT: int = os.getenv("POST_DESIGN_AGENT_PORT", 10000)
     MATH_MCP_SERVER_PORT: int = os.getenv("MATH_MCP_SERVER_PORT", 10001)
     
-    OPENINFERENCE_DISABLED: bool = os.getenv("OPENINFERENCE_DISABLED", False)
-    DEBUG: bool = os.getenv("DEBUG", False)
+    OPENINFERENCE_DISABLED: bool = bool(os.getenv("OPENINFERENCE_DISABLED", 0) == 1)
+    DEBUG: bool = bool(os.getenv("DEBUG", 0) == 1)
     
     def __init__(self):
         # Create directories if they don't exist

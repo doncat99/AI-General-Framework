@@ -1,7 +1,12 @@
+# gateway/mem0/sinks/models.py
 from __future__ import annotations
-from typing import Dict, Any, Optional
+
+from typing import Dict, Any
+import hashlib
+import json
+
 from pydantic import BaseModel, Field
-import hashlib, json
+
 
 class MemoryRecord(BaseModel):
     id: str
@@ -17,6 +22,8 @@ class MemoryRecord(BaseModel):
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     @classmethod
-    def from_text(cls, text: str, metadata: Dict[str, Any], user_id: str, team_id: str, visibility: str) -> "MemoryRecord":
+    def from_text(
+        cls, text: str, metadata: Dict[str, Any], user_id: str, team_id: str, visibility: str
+    ) -> "MemoryRecord":
         rid = cls.deterministic_id(text, metadata)
         return cls(id=rid, text=text, metadata=metadata, user_id=user_id, team_id=team_id, visibility=visibility)
