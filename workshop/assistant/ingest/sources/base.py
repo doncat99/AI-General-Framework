@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Iterator, AsyncIterator
 from abc import ABC, abstractmethod
-from agents.assistant.ingest.models import MemoryRecord
+from workshop.assistant.ingest.models import MemoryRecord
 
 class BaseSource(ABC):
     @abstractmethod

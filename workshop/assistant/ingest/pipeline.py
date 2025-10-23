@@ -8,8 +8,8 @@ import time
 from loguru import logger
 
 from gateway.mem0.ingest.models import MemoryRecord
-from agents.assistant.ingest.sources.base import BaseSource
-from agents.assistant.setting import settings
+from workshop.assistant.ingest.sources.base import BaseSource
+from workshop.assistant.setting import settings
 
 
 # -------- helpers --------

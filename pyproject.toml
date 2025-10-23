@@ -8,7 +8,7 @@ readme = "README.md"
 package-mode = false
 
 [tool.poetry.dependencies]
-python = ">=3.11,<3.14"
+python = ">=3.13,<3.14"
 python-dotenv = "^1.1.1"
 ipython = "^9.5.0"
 
@@ -27,14 +27,16 @@ langfuse = { extras = ["gateway", "genai"], version = "^3.3.4" }
 instructor = "^1.11.3"
 litellm = "^1.77.1"
 google-adk = "^1.16.0"
+# google-adk = { extras = ["extensions"], version = "^1.14.1" }
 a2a-sdk = { extras = ["grpc", "http-server"], version = "^0.3.5" }
 openinference-instrumentation-google-adk = "^0.1.4"
 openai = "^1.107.1"
+ollama = "^0.6.0"
 fastmcp = "^2.12.3"
 mcp = { extras = ["cli"], version = "^1.14.0" }
 
 portalocker = "^3.2.0"
-json-repair = "^0.39.1"
+# json-repair = "^0.44.1"
 unidecode = "^1.4.0"
 nltk = "^3.9.1"
 pyspellchecker = "^0.8.3"
@@ -43,7 +45,6 @@ pymupdf = "^1.26.4"
 sentence-transformers = "^5.1.1"
 chromadb = { extras = ["duckdb+parquet"], version = "^1.1.1" }
 mem0ai = { extras = ["graph"], version = "^0.1.118" }
-
 
 [tool.poetry.group.dev.dependencies]
 coverage = "^7.10.6"

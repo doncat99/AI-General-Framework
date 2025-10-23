@@ -4,9 +4,9 @@ from __future__ import annotations
 from typing import Optional, Sequence, Union, Type
 from loguru import logger
 
-from agents.assistant.adk_tool_client import AdkToolClient
-from agents.assistant.tools.base_tool import BaseToolPack
-from agents.assistant.tools.box.mem0_tools import Mem0Tools
+from workshop.assistant.adk_tool_client import AdkToolClient
+from workshop.assistant.tools.base_tool import BaseToolPack
+from workshop.assistant.tools.box.mem0_tools import Mem0Tools
 
 
 PackSpec = Union[str, BaseToolPack, Type[BaseToolPack]]

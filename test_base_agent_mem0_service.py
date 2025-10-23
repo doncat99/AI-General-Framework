@@ -40,7 +40,7 @@ MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-5")
 # Mem0 service (YOUR self-hosted server)
 # Matches your compose: host exposes mem0 on 8001 -> http://127.0.0.1:8001
 MEM0_BASE_URL = os.getenv("MEM0_SERVER_URL", "http://127.0.0.1:8001")
-MEM0_API_KEY  = os.getenv("MEM0_SERVICE_API_KEY", "")  # optional, not required by your server
+MEM0_API_KEY  = os.getenv("MEM0_API_KEY", "")  # optional, not required by your server
 
 # Optional: quieter console
 logger.remove()

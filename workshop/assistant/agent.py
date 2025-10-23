@@ -9,13 +9,13 @@ from typing import Optional, List, Dict, Any, Tuple
 import httpx
 from loguru import logger
 
-from agents.assistant.adk_tool_client import AdkToolClient
-from agents.assistant.tools.tool_loader import register_tools
-from agents.assistant.prompts.prompt import get_system_prompt
+from workshop.assistant.adk_tool_client import AdkToolClient
+from workshop.assistant.tools.tool_loader import register_tools
+from workshop.assistant.prompts.prompt import get_system_prompt
 
 # Share the ContextVar used for per-turn correlation in tool logs
 try:
-    from agents.assistant.adk_tool_client import TURN_ID
+    from workshop.assistant.adk_tool_client import TURN_ID
 except Exception:
     TURN_ID = None
 
@@ -90,13 +90,17 @@ class AssistantAgent:
 
         # system prompt + model
         sys_inst = instruction or get_system_prompt(persona_key=persona, verbosity=verbosity)
-        model = model_name or os.getenv("OPENROUTER_MODEL") or "openai/gpt-4o-mini"
 
-        # ADK client + tools
-        self.client = AdkToolClient(model_name=model, instruction=sys_inst)
+        # ---- ADK client ----
+        self.client = AdkToolClient(model_name=model_name, instruction=sys_inst)
+
+        # ---- register tool packs (mem0 pack, etc.) ----
         register_tools(self.client)
 
-        self._model_for_logs: str = model
+        # ---- model name for logs (best-effort) ----
+        self._model_for_logs: str = model_name or "unknown"
+
+        # ---- RAG toggle ----
         if enable_rag is None:
             enable_rag = self._parse_bool_env("ENABLE_RAG", True)
         self._rag_enabled = bool(enable_rag)
@@ -140,11 +144,14 @@ class AssistantAgent:
 
     @classmethod
     def _resolve_mem0_url(cls) -> str:
+        # 1) explicit override via env
         env_url = os.getenv("MEM0_SERVER_URL")
         if env_url:
             return env_url
+        # 2) if inside container, prefer service DNS
         if cls._inside_container():
             return "http://mem0:8000"
+        # 3) host default uses published port (default 8001)
         port = os.getenv("MEM0_PORT", "8001")
         return f"http://localhost:{port}"
 
@@ -159,19 +166,38 @@ class AssistantAgent:
 
     # ---------- mem0 helpers ----------
     async def _mem0_add(self, user_id: str, text: str, role: str) -> None:
-        payload = {"message": text, "user_id": user_id, "agent_id": "rag_agent", "metadata": {"role": role}}
+        """
+        Persist a single message into mem0 for given user_id.
+        role: "user" or "assistant" (stored in metadata)
+        """
+        payload = {
+            "message": text,
+            "user_id": user_id,
+            "agent_id": "rag_agent",
+            "metadata": {"role": role},
+        }
         async with self._mem0_client(timeout=20.0) as cli:
             r = await cli.post("/add", json=payload)
             r.raise_for_status()
 
     async def _mem0_search(self, user_id: str, query: str, limit: int) -> List[str]:
-        payload = {"query": query, "user_id": user_id, "agent_id": "rag_agent", "limit": int(limit)}
+        """
+        Search mem0 semantic memory (not index).
+        Returns list of memory texts.
+        """
+        payload = {
+            "query": query,
+            "user_id": user_id,
+            "agent_id": "rag_agent",
+            "limit": int(limit),
+        }
         async with self._mem0_client(timeout=20.0) as cli:
             r = await cli.post("/search", json=payload)
             r.raise_for_status()
             data = r.json() or {}
             items = data.get("memories") if isinstance(data, dict) else None
             if not items:
+                # Some gateways return {"results":[{"memory":...}, ...]}
                 items = (data.get("results") if isinstance(data, dict) else []) or []
             out: List[str] = []
             for m in items:
@@ -182,11 +208,16 @@ class AssistantAgent:
             return [s for s in out if s]
 
     async def _mem0_index_search(self, query: str, k: int) -> List[str]:
+        """
+        Query Chroma index via mem0 server’s /index/search.
+        Returns list of document strings.
+        """
         payload = {"query": query, "k": int(k), "where": {}}
         async with self._mem0_client(timeout=20.0) as cli:
             r = await cli.post("/index/search", json=payload)
             r.raise_for_status()
             data = r.json() or {}
+            # The server returns {"documents": [...]}; some variants may return {"hits":[{"page_content":...}]}
             docs = data.get("documents") or []
             if docs:
                 return [d for d in docs if isinstance(d, str) and d]

@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from typing import Callable, Dict
 
-from agents.assistant.tools.base_tool import BaseToolPack
-from agents.assistant.tools.box.mem0_tools import Mem0Tools
+from workshop.assistant.tools.base_tool import BaseToolPack
+from workshop.assistant.tools.box.mem0_tools import Mem0Tools
 
 
 # Factory type for a tool pack

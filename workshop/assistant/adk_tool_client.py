@@ -9,7 +9,7 @@ from typing import Callable, Any, Optional, Dict, List
 from loguru import logger
 
 from utilities.base.base_agent import BaseAgent
-from agents.assistant.tools.base_tool import BaseToolPack
+from workshop.assistant.tools.base_tool import BaseToolPack
 
 # turn correlation (set by AssistantAgent.ainvoke)
 try:
@@ -101,7 +101,7 @@ class AdkToolClient(BaseAgent):
     ) -> None:
         default_instruction = "You are a helpful, concise assistant."
         try:
-            from agents.assistant.prompts.prompt import get_system_prompt
+            from workshop.assistant.prompts.prompt import get_system_prompt
             default_instruction = get_system_prompt() or default_instruction
         except Exception:
             pass

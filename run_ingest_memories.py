@@ -5,15 +5,11 @@ import os
 import sys
 import asyncio
 import argparse
-from typing import Optional
+from typing import Optional, List
 
 from loguru import logger
 
-# import warnings
-# # ---- optional: squelch known deprecation spam in 3.13 stacks ----
-# warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"^google\.adk\.runners$")
-# warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"^httpx\._models$")
-# warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"^aiohttp\.connector$")
+from config import config
 
 # --------- LOGGING ---------
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
@@ -26,38 +22,56 @@ logger.remove()
 logger.add(lambda m: print(m, end=""), level=LOG_LEVEL, format=LOG_FORMAT, enqueue=False)
 
 
+# --------- ENV / URL HELPERS ---------
+def _inside_container() -> bool:
+    return bool(os.getenv("INSIDE_DOCKER") or os.getenv("KUBERNETES_SERVICE_HOST"))
+
+def _resolve_mem0_url(fallback_host: str = "localhost") -> str:
+    """
+    Choose Mem0 base URL:
+      1) MEM0_SERVER_URL if set
+      2) If inside a container → http://mem0:8000
+      3) Host default → http://localhost:${MEM0_PORT or 8001}
+    """
+    env_url = os.getenv("MEM0_SERVER_URL")
+    if env_url:
+        return env_url.rstrip("/")
+
+    if _inside_container():
+        return "http://mem0:8000"
+
+    port = os.getenv("MEM0_PORT", "8001")
+    return f"http://{fallback_host}:{port}"
+
+
+# --------- MODELS ---------
+class LLMModel(str):
+    """MindMap pipeline's preferred LLM identifiers (decoupled from extraction)."""
+    GPT_4_1_MINI = "openai/gpt-4.1-mini"
+    GPT_4O = "openai/gpt-4o"
+    GPT_5 = "openai/gpt-5"
+    CLAUDE_SONNET_4 = "anthropic/claude-sonnet-4"
+    CLAUDE_OPUS_4_1 = "anthropic/claude-opus-4.1"
+    GOOGLE_GEMINI_2_5_FLASH = "google/gemini-2.5-flash-preview-09-2025"
+
+
 # ========== INGEST HELPERS ==========
 def _build_ingest_pipeline(args):
     """
-    Wire the ingest pipeline on demand. Requires your assistant ingest modules.
+    Wire the ingest pipeline on demand using your source classes.
+    The pipeline itself hits the Mem0 server /sink/upsert endpoint.
     """
-    from agents.assistant.ingest.pipeline import IngestPipeline
-    from agents.assistant.ingest.sources.json_roadmap import JSONRoadmapSource
+    from workshop.assistant.ingest.pipeline import IngestPipeline
+    from workshop.assistant.ingest.sources.json_roadmap import JSONRoadmapSource
 
     PDFSource = None
     if getattr(args, "pdf", None):
         try:
-            from agents.assistant.ingest.sources.pdf_pymupdf import PDFPyMuPDFSource as _PDF
+            from workshop.assistant.ingest.sources.pdf_pymupdf import PDFPyMuPDFSource as _PDF
             PDFSource = _PDF
         except Exception as e:
             logger.error(f"PDF ingestion requested but pdf_pymupdf source not available: {e}")
             sys.exit(2)
-
-    from agents.assistant.ingest.sinks.mem0_sink import Mem0Sink
-    from agents.assistant.ingest.sinks.chroma_sink import ChromaSink
-    from agents.assistant.ingest.sinks.neo4j_sink import Neo4jSink
-
-    # sinks
-    sinks = []
-    if getattr(args, "mem0", False):
-        sinks.append(Mem0Sink())
-    if getattr(args, "chroma", False):
-        sinks.append(ChromaSink())
-    if getattr(args, "neo4j", False):
-        sinks.append(Neo4jSink())
-    if not sinks:
-        logger.warning("No sinks selected; defaulting to mem0 only.")
-        sinks = [Mem0Sink()]
 
     # source
     if getattr(args, "json_roadmap", None):
@@ -75,7 +89,22 @@ def _build_ingest_pipeline(args):
         logger.error("You must provide either --json-roadmap or --pdf")
         sys.exit(2)
 
-    return IngestPipeline(source, sinks)
+    return IngestPipeline(source=source)
+
+
+def _selected_sinks(args) -> List[str]:
+    """Translate CLI flags to sink names expected by Mem0 server (/sink/upsert)."""
+    sinks: List[str] = []
+    if getattr(args, "mem0", False):
+        sinks.append("mem0")
+    if getattr(args, "chroma", False):
+        sinks.append("chroma")
+    if getattr(args, "neo4j", False):
+        sinks.append("neo4j")
+    if not sinks:
+        logger.warning("No sinks selected; defaulting to mem0 only.")
+        sinks = ["mem0"]
+    return sinks
 
 
 # ========== ASSISTANT ==========
@@ -83,11 +112,9 @@ async def _assistant_once(prompt: str, *, persona: str = "secretary", verbosity:
     """
     One-shot ask via AssistantAgent (centralizes prompts, tools, mem0, RAG).
     """
-    from agents.assistant.agent import AssistantAgent
-    # model = os.getenv("GOOGLE_MODEL", "google/gemini-2.5-flash-preview-09-2025")
-    model = "openai/gpt-4.1-mini"
+    from workshop.assistant.agent import AssistantAgent
     agent = AssistantAgent(
-        model_name=model,
+        model_name=LLMModel.GPT_5,
         enable_rag=False,  # flip on if a retriever is available
         persona=persona,
         verbosity=verbosity,
@@ -105,11 +132,9 @@ async def _assistant_chat(
     """
     Multi-turn REPL that can optionally include mem0 context and save QA to mem0.
     """
-    from agents.assistant.agent import AssistantAgent
-    # model = os.getenv("GOOGLE_MODEL", "google/gemini-2.5-flash-preview-09-2025")
-    model = "openai/gpt-4.1-mini"
+    from workshop.assistant.agent import AssistantAgent
     agent = AssistantAgent(
-        model_name=model,
+        model_name=LLMModel.GPT_5,
         enable_rag=False,
         persona=persona,
         verbosity=verbosity,
@@ -196,7 +221,9 @@ def _menu_ingest():
     args.neo4j = "3" in chosen
 
     pipe = _build_ingest_pipeline(args)
-    pipe.run()
+    mem0_url = (os.getenv("MEM0_SERVER_URL") or _resolve_mem0_url()).rstrip("/")
+    sinks = _selected_sinks(args)
+    pipe.run(sinks=sinks, base_url=mem0_url)  # new pipeline signature
     print("Ingest finished.\n")
 
 def _menu_ask():
@@ -220,7 +247,7 @@ def _menu_chat():
 def _menu_tools():
     print("\n== Tools ==")
     try:
-        from agents.assistant.agent import AssistantAgent
+        from workshop.assistant.agent import AssistantAgent
         agent = AssistantAgent(enable_rag=False)
         names = agent.list_tools()
     except Exception as e:
@@ -268,14 +295,15 @@ def main():
     sub = p.add_subparsers(dest="cmd")
 
     # ingest
-    pi = sub.add_parser("ingest", help="Ingest data into mem0 / chroma / neo4j")
+    pi = sub.add_parser("ingest", help="Ingest data into mem0 / chroma / neo4j via Mem0 server")
     src = pi.add_mutually_exclusive_group(required=True)
     src.add_argument("--json-roadmap", help="Path to JSON roadmap")
     src.add_argument("--pdf", help="Path to PDF (PyMuPDF)")
     pi.add_argument("--pages", help="1-based page range like 1-5", default=None)
-    pi.add_argument("--mem0", action="store_true", help="Ingest to mem0")
-    pi.add_argument("--chroma", action="store_true", help="Ingest to ChromaDB")
-    pi.add_argument("--neo4j", action="store_true", help="Ingest to Neo4j")
+    pi.add_argument("--mem0", action="store_true", help="Ingest to mem0 sink")
+    pi.add_argument("--chroma", action="store_true", help="Ingest to ChromaDB sink")
+    pi.add_argument("--neo4j", action="store_true", help="Ingest to Neo4j sink")
+    pi.add_argument("--mem0-url", help="Override Mem0 server base URL (default: env MEM0_SERVER_URL or localhost:8001)")
 
     # ask (single-turn)
     pa = sub.add_parser("ask", help="Ask the assistant once")
@@ -298,12 +326,16 @@ def main():
 
     # menu if requested or no subcommand
     if args.menu or args.cmd is None:
+        logger.info(f"Mem0 base URL = {(os.getenv('MEM0_SERVER_URL') or _resolve_mem0_url())}")
         interactive_menu()
         return
 
     if args.cmd == "ingest":
         pipe = _build_ingest_pipeline(args)
-        pipe.run()
+        mem0_url = (args.mem0_url or os.getenv("MEM0_SERVER_URL") or _resolve_mem0_url()).rstrip("/")
+        logger.info(f"Ingest → Mem0 base URL = {mem0_url}")
+        sinks = _selected_sinks(args)
+        pipe.run(sinks=sinks, base_url=mem0_url)  # new pipeline signature
         return
 
     if args.cmd == "ask":
@@ -312,6 +344,7 @@ def main():
         return
 
     if args.cmd == "chat":
+        logger.info(f"Chat → Mem0 base URL = {(os.getenv('MEM0_SERVER_URL') or _resolve_mem0_url())}")
         asyncio.run(_assistant_chat(args.persona, args.verbosity, args.mem0_context, args.mem0_save, args.top_k))
         return
 
