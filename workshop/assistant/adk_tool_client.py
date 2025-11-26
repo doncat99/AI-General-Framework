@@ -9,6 +9,7 @@ from typing import Callable, Any, Optional, Dict, List
 from loguru import logger
 
 from utilities.base.base_agent import BaseAgent
+from utilities.base.base_llm import PromptVars  # <- Langfuse Prompt Management controls + vars (Pydantic v2)
 from workshop.assistant.tools.base_tool import BaseToolPack
 
 # turn correlation (set by AssistantAgent.ainvoke)
@@ -24,9 +25,11 @@ _MAX_PREVIEW = int((__import__("os").getenv("TOOL_LOG_MAX_CHARS") or "400"))
 _LOG_ARGS = (__import__("os").getenv("TOOL_LOG_ARGS") or "true").lower() in ("1","true","yes","y","on")
 _LOG_RESULT = (__import__("os").getenv("TOOL_LOG_RESULT") or "true").lower() in ("1","true","yes","y","on")
 
+
 def _normalize_name(name: str | None) -> str:
     base = (name or "tool").strip()
     return "".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in base) or "tool"
+
 
 def _preview(obj: Any) -> str:
     try:
@@ -34,6 +37,7 @@ def _preview(obj: Any) -> str:
     except Exception:
         s = str(obj)
     return s if len(s) <= _MAX_PREVIEW else s[:_MAX_PREVIEW] + "…"
+
 
 def _mk_async_named(handler: Callable[..., Any], tool_name: str) -> Callable[..., Any]:
     """
@@ -45,11 +49,11 @@ def _mk_async_named(handler: Callable[..., Any], tool_name: str) -> Callable[...
         async def tool(args: Any):
             tid = TURN_ID.get("-") if TURN_ID else "-"
             if _LOG_ARGS:
-                logger.info(f"[turn {tid}] [tool] {tool_name} ← { _preview(args) }")
+                logger.info(f"[turn {tid}] [tool] {tool_name} ← {_preview(args)}")
             try:
                 res = await handler(args)
                 if _LOG_RESULT:
-                    logger.info(f"[turn {tid}] [tool] {tool_name} → { _preview(res) }")
+                    logger.info(f"[turn {tid}] [tool] {tool_name} → {_preview(res)}")
                 return res
             except Exception as e:
                 logger.exception(f"[turn {tid}] [tool] {tool_name} ✖ {e}")
@@ -58,13 +62,13 @@ def _mk_async_named(handler: Callable[..., Any], tool_name: str) -> Callable[...
         async def tool(args: Any):
             tid = TURN_ID.get("-") if TURN_ID else "-"
             if _LOG_ARGS:
-                logger.info(f"[turn {tid}] [tool] {tool_name} ← { _preview(args) }")
+                logger.info(f"[turn {tid}] [tool] {tool_name} ← {_preview(args)}")
             try:
                 res = handler(args)
                 if inspect.isawaitable(res):
                     res = await res
                 if _LOG_RESULT:
-                    logger.info(f"[turn {tid}] [tool] {tool_name} → { _preview(res) }")
+                    logger.info(f"[turn {tid}] [tool] {tool_name} → {_preview(res)}")
                 return res
             except Exception as e:
                 logger.exception(f"[turn {tid}] [tool] {tool_name} ✖ {e}")
@@ -79,12 +83,33 @@ def _mk_async_named(handler: Callable[..., Any], tool_name: str) -> Callable[...
 
 class AdkToolClient(BaseAgent):
     """
-    Minimal client for your tools framework.
+    Minimal client for your tools framework — now with **Langfuse Prompt Management** passthrough.
 
     - Registers tools as callables via BaseAgent.add_tool / set_tools
     - Dedupes names and handlers
     - Provides batch registration to avoid repeated agent rebuilds
-    - Relies on BaseAgent.run_async(prompt, system_prompt=None) and set_system_prompt()
+    - Relies on BaseAgent.run_async(message_text, system_prompt=None, prompt_vars: Optional[PromptVars]=None)
+      so you can use managed prompts without changing call sites that don't need them.
+
+    Usage examples:
+
+    ```py
+    client = AdkToolClient(model_name="openrouter/openai/gpt-4.1-mini")
+
+    # plain run
+    await client.ainvoke("How many users today?")
+
+    # run with a one-off system prompt
+    await client.ainvoke("Summarize logs.", system_prompt="Be terse, bullet points only.")
+
+    # run with Langfuse Prompt Management (production label)
+    pv = PromptVars(
+        prompt_name="assistant-runtime",
+        instruction="You are a helpful, concise assistant.",
+        contents="summarize recent updates"
+    )
+    await client.ainvoke("Please process this request.", prompt_vars=pv)
+    ```
     """
 
     def __init__(
@@ -126,6 +151,14 @@ class AdkToolClient(BaseAgent):
         logger.info(
             f"AdkToolClient initialized (model='{model_name}', agent='{agent_name}', app='{app_name}')"
         )
+
+    # ---------- optional helpers for turn correlation ----------
+
+    @staticmethod
+    def set_turn_id(turn_id: str) -> None:
+        """Set a correlation id used by tool wrappers for logging."""
+        if TURN_ID:
+            TURN_ID.set(turn_id or "-")
 
     # ---------- duplicate/name management ----------
 
@@ -227,3 +260,32 @@ class AdkToolClient(BaseAgent):
         except Exception as e:
             logger.exception(f"Failed registering pack {pack.__class__.__name__}: {e}")
             return 0
+
+    # ---------- chat entrypoints (with Prompt Management passthrough) ----------
+
+    async def ainvoke(
+        self,
+        message_text: str,
+        *,
+        system_prompt: Optional[str] = None,
+        prompt_vars: Optional[PromptVars] = None,
+    ) -> Optional[str]:
+        """
+        Primary entrypoint used by higher-level assistants.
+
+        - `system_prompt`: optional one-off override for this turn (persists after).
+        - `prompt_vars`: optional Langfuse-managed prompt controls + template variables.
+                         If provided (and has a `prompt_name`), we will fetch/compile the
+                         prompt, set the compiled system instruction for this and future turns,
+                         and prepend any compiled 'user' template text to `message_text`.
+        """
+        return await self.run_async(
+            message_text,
+            system_prompt=system_prompt,
+            prompt_vars=prompt_vars,
+        )
+
+    # Back-compat alias
+    async def run(self, message_text: str, *, system_prompt: Optional[str] = None) -> Optional[str]:
+        """Alias for simple use-cases without Prompt Management."""
+        return await self.run_async(message_text, system_prompt=system_prompt)

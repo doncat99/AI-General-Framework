@@ -1,5 +1,5 @@
 # /Users/huangdon/Documents/OntoSynth/test_base_agent_mem0_service_fixed.py
-# Python 3.13
+# Python 3.11
 
 import os
 import json

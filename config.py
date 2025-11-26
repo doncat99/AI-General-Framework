@@ -8,7 +8,7 @@ load_dotenv()
 
 class Config:
     PRJ_ROOT = Path(__file__).parent
-    MODEL_ROOT = os.path.join(PRJ_ROOT, "trained_model")
+    MODEL_ROOT = os.path.join(PRJ_ROOT, "", ".trained_model")
     USER_FILES = os.getenv("USER_FILE_PATH", os.path.join(PRJ_ROOT, "user_files"))
 
     LOG_ROOT = os.path.join(USER_FILES, "logs")
@@ -21,8 +21,10 @@ class Config:
 
     DOCUMENT_REGISTRY_PATH = os.path.join(USER_FILES, "registry")
     
-    OPEN_ROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
-    OPEN_ROUTER_BASE_URL: str = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
+    OPENROUTER_BASE_URL: str = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+    OPENAI_BASE_URL: str = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
     GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY", "")
     HOST_AGENT_PORT: int = os.getenv("DB_URL", 8080)
     POST_DESIGN_AGENT_PORT: int = os.getenv("POST_DESIGN_AGENT_PORT", 10000)

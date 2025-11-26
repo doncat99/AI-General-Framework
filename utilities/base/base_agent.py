@@ -2,12 +2,9 @@
 from __future__ import annotations
 
 import os
-import pickle
-import hashlib
-from typing import Optional, List, Callable, Any
-from pathlib import Path
-from functools import wraps
 import asyncio
+import inspect
+from typing import Optional, List, Callable, Any, Tuple, Dict
 
 from loguru import logger
 
@@ -17,10 +14,9 @@ from google.adk.models.lite_llm import LiteLlm
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
-import litellm
 
-from config import config
-
+from config import config, langfuse  # <- langfuse client
+from utilities.base.prompt_manager import PromptManager, PromptVars  # <- decoupled PM
 
 # ---------------------------------------------------------------------------
 # Small helpers
@@ -31,55 +27,36 @@ def _as_bool(v: str | None) -> bool:
 
 
 # Activate OpenInference unless disabled via config/env
-# if not _as_bool(os.getenv("OPENINFERENCE_DISABLED")) and not _as_bool(os.getenv("OTEL_SDK_DISABLED")):
-GoogleADKInstrumentor().instrument()
+if not _as_bool(os.getenv("OPENINFERENCE_DISABLED")):
+    try:
+        GoogleADKInstrumentor().instrument()
+    except Exception as e:
+        logger.debug(f"[agent] OpenInference instrumentation skipped: {e}")
 
 # optional: verbose HTTP/debug for LiteLLM routing
-if config.DEBUG:
-    try:
-        litellm._turn_on_debug()
-    except Exception:
-        pass
+try:
+    import litellm  # type: ignore
+    if config.DEBUG:
+        try:
+            litellm._turn_on_debug()
+        except Exception:
+            pass
+except Exception:
+    litellm = None  # type: ignore
 
 
 # ---------------------------------------------------------------------------
-# Simple pickle cache decorator
-# ---------------------------------------------------------------------------
-
-def pickle_cache(cache_subdir: str):
-    """Decorator to cache function results using pickle files on disk."""
-    def decorator(func):
-        @wraps(func)
-        async def wrapper(self, *args, **kwargs):
-            if not getattr(self, "use_cache", False) or not getattr(self, "cache_dir", None):
-                return await func(self, *args, **kwargs)
-            cache_dir = Path(self.cache_dir) / cache_subdir
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            key = hashlib.sha256(pickle.dumps((args, kwargs))).hexdigest()
-            fp = cache_dir / f"{key}.pkl"
-            if fp.exists():
-                return pickle.loads(fp.read_bytes())
-            result = await func(self, *args, **kwargs)
-            if result is not None:
-                fp.write_bytes(pickle.dumps(result))
-            return result
-        return wrapper
-    return decorator
-
-
-# ---------------------------------------------------------------------------
-# BaseAgent
+# BaseAgent (with decoupled Prompt Manager + robust fallback)
 # ---------------------------------------------------------------------------
 
 class BaseAgent:
     """
-    ADK-based base agent that supports dynamic tool updates.
+    ADK-based base agent that supports dynamic tool updates + Langfuse Prompt Management.
 
-    Key points:
-    - Builds one Agent/Runner up-front.
-    - `set_tools` tries to update tools IN-PLACE (`self.agent.tools = ...`).
-      If the ADK version refuses, we fall back to `_build_agent_and_runner()`.
-    - Safe in both sync and async environments (lazy session creation).
+    - Prompt management fully delegated to PromptManager (compile + fallbacks).
+    - Robust handling of ADK runner (async-iterable vs awaitable).
+    - Direct LiteLLM fallback if the ADK stream fails or yields no text.
+    - Correct (sync) Langfuse span context usage.
     """
 
     def __init__(
@@ -124,6 +101,9 @@ class BaseAgent:
             # Loop running → schedule and await later in run_async()
             self._session_task = loop.create_task(self._create_session())
 
+        # Prompt Manager (decoupled)
+        self.pm = PromptManager()
+
         # Build agent/runner once
         self._build_agent_and_runner()
 
@@ -146,8 +126,8 @@ class BaseAgent:
             name=self._agent_name,
             model=LiteLlm(
                 model=model_id,
-                api_key=config.OPEN_ROUTER_API_KEY,
-                api_base=config.OPEN_ROUTER_BASE_URL,
+                api_key=config.OPENROUTER_API_KEY,
+                api_base=config.OPENROUTER_BASE_URL,
             ),
             instruction=self._instruction,
             tools=self.tools,
@@ -212,40 +192,172 @@ class BaseAgent:
         self.set_system_prompt(new_instruction)
 
     # ------------------------------------------------------------------
+    # Direct LLM fallback (LiteLLM → OpenRouter)
+    # ------------------------------------------------------------------
+
+    async def _direct_llm_fallback(self, messages: List[Dict[str, str]], timeout: int = 60) -> Optional[str]:
+        """
+        One-shot completion if ADK streaming fails. Requires `litellm` to be available
+        and OPENROUTER_API_KEY configured in `config`.
+        """
+        if not litellm:
+            logger.error("[agent] Fallback requested but litellm is not installed.")
+            return None
+        try:
+            resp = await litellm.acompletion(
+                model=self._normalize_model(self._model_name),
+                api_key=config.OPENROUTER_API_KEY,
+                api_base=config.OPENROUTER_BASE_URL or None,
+                messages=messages,
+                timeout=timeout,
+            )
+            txt = (resp.choices[0].message.get("content") or "").strip()
+            return txt or None
+        except Exception as e:
+            logger.error(f"[agent] Fallback LLM failed: {e}")
+            return None
+
+    # ------------------------------------------------------------------
     # Run (single entrypoint)
     # ------------------------------------------------------------------
 
-    # @pickle_cache(cache_subdir="run_async")
-    async def run_async(self, message_text: str, *, system_prompt: Optional[str] = None) -> Optional[str]:
+    async def run_async(
+        self,
+        message_text: str,
+        *,
+        system_prompt: Optional[str] = None,
+        prompt_vars: Optional[PromptVars] = None,
+    ) -> Optional[str]:
         """
-        Main entrypoint. If `system_prompt` is provided, it is applied via set_system_prompt()
-        before running this turn (and persists for subsequent turns).
-        """
-        # Update system prompt if provided
-        if system_prompt is not None:
-            try:
-                self.set_system_prompt(system_prompt)
-            except Exception:
-                logger.debug("[agent] Could not set system prompt dynamically; continuing without it.")
+        Main entrypoint.
 
+        If `prompt_vars` is provided with a valid `prompt_name`, we will:
+          - fetch & compile the managed prompt via PromptManager,
+          - set the agent's system prompt to the compiled system text (or `system_prompt` if given),
+          - optionally prepend any compiled 'user' template content to this turn's message,
+            depending on `prompt_vars.apply` ('system'|'user'|'both').
+
+        Otherwise, if `system_prompt` is provided, we just set that for this turn.
+
+        The updated instruction persists for subsequent turns (explicit by design).
+        """
         # If session creation was scheduled at __init__, await it now
         if self._session_task and not self._session_task.done():
             await self._session_task
 
-        user_msg = types.Content(role="user", parts=[types.Part(text=message_text)])
-        final_text: Optional[str] = None
+        # Resolve prompt via PromptManager (or fallbacks)
+        resolved_instruction = (system_prompt or self._instruction or "").strip()
+        resolved_user_text = message_text
+        lf_prompt_obj = None
+        lf_cfg: Dict[str, Any] = {}
+
+        if prompt_vars is not None:
+            resolved_instruction, resolved_user_text, lf_prompt_obj, lf_cfg = self.pm.compile_prompt(
+                pv=prompt_vars,
+                fallback_instruction=system_prompt or self._instruction,
+                user_message_text=message_text,
+            )
+
+        # Apply the instruction for this and future turns
         try:
-            async for event in self.runner.run_async(
+            self.set_system_prompt(resolved_instruction)
+        except Exception:
+            logger.debug("[agent] Could not set system prompt dynamically; continuing without it.")
+
+        user_msg = types.Content(role="user", parts=[types.Part(text=resolved_user_text)])
+        final_text: Optional[str] = None
+
+        # Trace this turn in Langfuse (SYNC context manager!)
+        span_ctx = None
+        try:
+            span_ctx = langfuse.start_as_current_span(name=self.app_name) if langfuse else None
+        except Exception:
+            span_ctx = None
+
+        # Helper to run the ADK runner and collect final text
+        async def _run_adk() -> Optional[str]:
+            text: Optional[str] = None
+            stream = self.runner.run_async(
                 user_id=self.user_id,
                 session_id=self.session_id,
                 new_message=user_msg,
-            ):
-                if event.is_final_response():
+            )
+            # Some ADK versions return async generator; others return awaitable
+            if hasattr(stream, "__aiter__"):
+                async for event in stream:
+                    if event.is_final_response():
+                        try:
+                            text = event.content.parts[0].text
+                        except Exception:
+                            text = None
+            else:
+                if inspect.isawaitable(stream):
+                    result = await stream
                     try:
-                        final_text = event.content.parts[0].text
+                        text = result.content.parts[0].text  # type: ignore[attr-defined]
                     except Exception:
-                        final_text = None
+                        text = None
+            return text
+
+        try:
+            if span_ctx:
+                with span_ctx as span:  # sync context
+                    final_text = await _run_adk()
+
+                    # best-effort prompt linking metadata
+                    try:
+                        meta = {
+                            "provider": "openrouter",
+                            "model": self._normalize_model(self._model_name),
+                            "adk": True,
+                        }
+                        # If PM provided a concrete prompt and linking is allowed
+                        if lf_prompt_obj is not None and getattr(prompt_vars, "link_prompt", True):
+                            meta.update({
+                                "langfuse_prompt_name": getattr(lf_prompt_obj, "name", None),
+                                "langfuse_prompt_version": getattr(lf_prompt_obj, "version", None),
+                                "langfuse_fetch_type": getattr(prompt_vars, "fetch_type", None),
+                                "langfuse_apply": getattr(prompt_vars, "apply", None),
+                            })
+                        # Attach inputs/outputs
+                        span.update_trace(
+                            input={"system_instruction": resolved_instruction, "user_text": resolved_user_text},
+                            output=final_text or "",
+                            user_id=self.user_id,
+                            session_id=self.session_id,
+                            tags=["agent", "adk", "lite-llm"],
+                            metadata=meta,
+                            version="1.0.0",
+                        )
+                    except Exception:
+                        pass
+
+                try:
+                    langfuse.flush()
+                except Exception:
+                    pass
+            else:
+                # no span available; just run
+                final_text = await _run_adk()
+
+            # If ADK produced nothing, fallback via LiteLLM
+            if not (final_text and final_text.strip()):
+                logger.warning("[agent] Runner produced no final text; using direct LLM fallback.")
+                fb_msgs: List[Dict[str, str]] = []
+                sys_txt = resolved_instruction
+                if sys_txt:
+                    fb_msgs.append({"role": "system", "content": sys_txt})
+                fb_msgs.append({"role": "user", "content": resolved_user_text})
+                final_text = await self._direct_llm_fallback(fb_msgs)
+
             return final_text
+
         except Exception as e:
             logger.error(f"[agent] Error running agent: {e}")
-            return None
+            # Hard fallback on exceptions too
+            fb_msgs: List[Dict[str, str]] = []
+            sys_txt = resolved_instruction
+            if sys_txt:
+                fb_msgs.append({"role": "system", "content": sys_txt})
+            fb_msgs.append({"role": "user", "content": resolved_user_text})
+            return await self._direct_llm_fallback(fb_msgs)

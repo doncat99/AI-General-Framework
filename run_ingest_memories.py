@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import os
 import sys
+import json
 import asyncio
 import argparse
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 
 from loguru import logger
 
-from config import config
+from config import config  # noqa: F401  (kept for env/config side-effects)
 
 # --------- LOGGING ---------
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
@@ -30,29 +31,85 @@ def _resolve_mem0_url(fallback_host: str = "localhost") -> str:
     """
     Choose Mem0 base URL:
       1) MEM0_SERVER_URL if set
-      2) If inside a container → http://mem0:8000
+      2) If inside a container → http://mem0:8001
       3) Host default → http://localhost:${MEM0_PORT or 8001}
     """
     env_url = os.getenv("MEM0_SERVER_URL")
     if env_url:
         return env_url.rstrip("/")
-
     if _inside_container():
-        return "http://mem0:8000"
-
+        return "http://mem0:8001"
     port = os.getenv("MEM0_PORT", "8001")
     return f"http://{fallback_host}:{port}"
 
 
 # --------- MODELS ---------
 class LLMModel(str):
-    """MindMap pipeline's preferred LLM identifiers (decoupled from extraction)."""
+    """Assistant runner model identifiers (OpenRouter-style; BaseAgent will normalize)."""
     GPT_4_1_MINI = "openai/gpt-4.1-mini"
     GPT_4O = "openai/gpt-4o"
     GPT_5 = "openai/gpt-5"
     CLAUDE_SONNET_4 = "anthropic/claude-sonnet-4"
     CLAUDE_OPUS_4_1 = "anthropic/claude-opus-4.1"
     GOOGLE_GEMINI_2_5_FLASH = "google/gemini-2.5-flash-preview-09-2025"
+
+    @classmethod
+    def choices(cls) -> List[str]:
+        return [
+            cls.GPT_5,
+            cls.GPT_4O,
+            cls.GPT_4_1_MINI,
+            cls.CLAUDE_SONNET_4,
+            cls.CLAUDE_OPUS_4_1,
+            cls.GOOGLE_GEMINI_2_5_FLASH,
+        ]
+
+
+# --------- Langfuse Prompt Mgmt helpers ---------
+from utilities.base.base_llm import PromptVars  # dataclass used by AdkToolClient/AssistantAgent
+
+def _parse_prompt_vars(
+    prompt_name: Optional[str],
+    prompt_label: Optional[str],
+    prompt_version: Optional[str],
+    prompt_type: Optional[str],
+    vars_json: Optional[str],
+    vars_file: Optional[str],
+) -> Optional[PromptVars]:
+    if PromptVars is None:
+        if any([prompt_name, prompt_label, prompt_version, prompt_type, vars_json, vars_file]):
+            logger.warning("Prompt management requested but PromptVars not available; ignoring prompt options.")
+        return None
+
+    if not any([prompt_name, prompt_label, prompt_version]):
+        # Nothing to do
+        return None
+
+    variables: Dict[str, Any] = {}
+    if vars_file:
+        try:
+            with open(vars_file, "r", encoding="utf-8") as fr:
+                variables = json.load(fr) or {}
+        except Exception as e:
+            logger.warning(f"Failed to load --vars-file: {e}")
+    if vars_json:
+        try:
+            variables.update(json.loads(vars_json) or {})
+        except Exception as e:
+            logger.warning(f"Failed to parse --vars-json: {e}")
+
+    prompt_type = (prompt_type or "both").lower()
+    if prompt_type not in {"system", "user", "both"}:
+        logger.warning(f"Unknown --prompt-type '{prompt_type}', defaulting to 'both'.")
+        prompt_type = "both"
+
+    return PromptVars(  # type: ignore[call-arg]
+        prompt_name=prompt_name,
+        prompt_label=prompt_label,
+        prompt_version=prompt_version,
+        prompt_type=prompt_type,   # how to apply compiled templates
+        variables=variables or {},
+    )
 
 
 # ========== INGEST HELPERS ==========
@@ -108,18 +165,26 @@ def _selected_sinks(args) -> List[str]:
 
 
 # ========== ASSISTANT ==========
-async def _assistant_once(prompt: str, *, persona: str = "secretary", verbosity: str = "normal") -> str:
+async def _assistant_once(
+    prompt: str,
+    *,
+    persona: str = "secretary",
+    verbosity: str = "normal",
+    model_name: str = LLMModel.GPT_5,
+    prompt_vars: Optional[PromptVars] = None,
+) -> str:
     """
     One-shot ask via AssistantAgent (centralizes prompts, tools, mem0, RAG).
+    Supports Langfuse Prompt Management via `prompt_vars`.
     """
     from workshop.assistant.agent import AssistantAgent
     agent = AssistantAgent(
-        model_name=LLMModel.GPT_5,
+        model_name=model_name,
         enable_rag=False,  # flip on if a retriever is available
         persona=persona,
         verbosity=verbosity,
     )
-    return await agent.ainvoke(user_id="cli", user_message=prompt)
+    return await agent.ainvoke(user_id="cli", user_message=prompt, prompt_vars=prompt_vars)
 
 
 async def _assistant_chat(
@@ -128,13 +193,16 @@ async def _assistant_chat(
     use_mem0_ctx: bool,
     save_mem0: bool,
     top_k: int,
+    model_name: str,
+    prompt_vars: Optional[PromptVars],
 ) -> None:
     """
     Multi-turn REPL that can optionally include mem0 context and save QA to mem0.
+    If `prompt_vars` is provided, it is applied on every turn.
     """
     from workshop.assistant.agent import AssistantAgent
     agent = AssistantAgent(
-        model_name=LLMModel.GPT_5,
+        model_name=model_name,
         enable_rag=False,
         persona=persona,
         verbosity=verbosity,
@@ -158,12 +226,16 @@ async def _assistant_chat(
                 use_mem0_ctx=use_mem0_ctx,
                 save_mem0=save_mem0,
                 mem_k=top_k,
+                prompt_vars=prompt_vars,
             )
         except Exception as e:
             logger.error(f"Assistant run failed: {e}")
             answer = "Sorry — I had trouble answering that."
 
-        print(f"Assistant: {answer}")
+        if not (answer or "").strip():
+            print("Assistant: [no response — LLM runner failed; fallback may be misconfigured. Check logs.]")
+        else:
+            print(f"Assistant: {answer}")
 
 
 # ========== MENU (INTERACTIVE) ==========
@@ -241,8 +313,7 @@ def _menu_chat():
         top_k = int(input("mem0 top_k [5]: ").strip() or "5")
     except ValueError:
         top_k = 5
-    # Menu uses defaults (secretary/normal)
-    asyncio.run(_assistant_chat("secretary", "normal", use_ctx, save, top_k))
+    asyncio.run(_assistant_chat("secretary", "normal", use_ctx, save, top_k, LLMModel.GPT_5, None))
 
 def _menu_tools():
     print("\n== Tools ==")
@@ -310,6 +381,16 @@ def main():
     pa.add_argument("--prompt", required=True)
     pa.add_argument("--persona", choices=["secretary", "executive", "tutor"], default="secretary")
     pa.add_argument("--verbosity", choices=["brief", "normal", "thorough"], default="normal")
+    pa.add_argument("--model", choices=LLMModel.choices(), default=LLMModel.GPT_5)
+
+    # prompt mgmt (Langfuse)
+    pa.add_argument("--prompt-name", help="Managed prompt name (Langfuse)")
+    pa.add_argument("--prompt-label", help="Optional prompt label (Langfuse)")
+    pa.add_argument("--prompt-version", help="Optional prompt version (Langfuse)")
+    pa.add_argument("--prompt-type", choices=["system", "user", "both"], default="both",
+                    help="Apply compiled system, user, or both templates")
+    pa.add_argument("--vars-json", help="Inline JSON string for prompt variables (merged)")
+    pa.add_argument("--vars-file", help="Path to JSON file for prompt variables (merged)")
 
     # chat (multi-turn REPL)
     pc = sub.add_parser("chat", help="Interactive assistant chat")
@@ -318,6 +399,15 @@ def main():
     pc.add_argument("--top-k", type=int, default=5)
     pc.add_argument("--persona", choices=["secretary", "executive", "tutor"], default="secretary")
     pc.add_argument("--verbosity", choices=["brief", "normal", "thorough"], default="normal")
+    pc.add_argument("--model", choices=LLMModel.choices(), default=LLMModel.GPT_5)
+
+    # prompt mgmt for chat as well (applied every turn)
+    pc.add_argument("--prompt-name", help="Managed prompt name (Langfuse)")
+    pc.add_argument("--prompt-label", help="Optional prompt label (Langfuse)")
+    pc.add_argument("--prompt-version", help="Optional prompt version (Langfuse)")
+    pc.add_argument("--prompt-type", choices=["system", "user", "both"], default="both")
+    pc.add_argument("--vars-json", help="Inline JSON string for prompt variables (merged)")
+    pc.add_argument("--vars-file", help="Path to JSON file for prompt variables (merged)")
 
     # tools (list)
     sub.add_parser("tools", help="List available tools")
@@ -339,13 +429,47 @@ def main():
         return
 
     if args.cmd == "ask":
-        text = asyncio.run(_assistant_once(prompt=args.prompt, persona=args.persona, verbosity=args.verbosity))
+        pv = _parse_prompt_vars(
+            getattr(args, "prompt_name", None),
+            getattr(args, "prompt_label", None),
+            getattr(args, "prompt_version", None),
+            getattr(args, "prompt_type", None),
+            getattr(args, "vars_json", None),
+            getattr(args, "vars_file", None),
+        )
+        text = asyncio.run(
+            _assistant_once(
+                prompt=args.prompt,
+                persona=args.persona,
+                verbosity=args.verbosity,
+                model_name=args.model,
+                prompt_vars=pv,
+            )
+        )
         print(text)
         return
 
     if args.cmd == "chat":
         logger.info(f"Chat → Mem0 base URL = {(os.getenv('MEM0_SERVER_URL') or _resolve_mem0_url())}")
-        asyncio.run(_assistant_chat(args.persona, args.verbosity, args.mem0_context, args.mem0_save, args.top_k))
+        pv = _parse_prompt_vars(
+            getattr(args, "prompt_name", None),
+            getattr(args, "prompt_label", None),
+            getattr(args, "prompt_version", None),
+            getattr(args, "prompt_type", None),
+            getattr(args, "vars_json", None),
+            getattr(args, "vars_file", None),
+        )
+        asyncio.run(
+            _assistant_chat(
+                args.persona,
+                args.verbosity,
+                args.mem0_context,
+                args.mem0_save,
+                args.top_k,
+                args.model,
+                pv,
+            )
+        )
         return
 
     if args.cmd == "tools":

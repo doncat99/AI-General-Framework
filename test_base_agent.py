@@ -87,7 +87,8 @@ MODEL_NAME = os.getenv(
     "DEMO_MODEL_NAME",
     # pick a tool-capable model that works well via OpenRouter+LiteLLM in ADK
     # (you can override with DEMO_MODEL_NAME)
-    "anthropic/claude-3.5-sonnet"
+    # "anthropic/claude-3.5-sonnet"
+    "openai/gpt-4.1-mini"
 )
 
 agent = BaseAgent(

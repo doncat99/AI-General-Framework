@@ -12,6 +12,7 @@ from loguru import logger
 from workshop.assistant.adk_tool_client import AdkToolClient
 from workshop.assistant.tools.tool_loader import register_tools
 from workshop.assistant.prompts.prompt import get_system_prompt
+from utilities.base.base_llm import PromptVars  # <- Langfuse Prompt Management
 
 # Share the ContextVar used for per-turn correlation in tool logs
 try:
@@ -49,6 +50,7 @@ class AssistantAgent:
       - Tool loading
       - Optional mem0 search/save + optional RAG via mem0 index
       - Detailed timing with a 'time_consume' summary stored per turn
+      - **Langfuse Prompt Management passthrough** via `prompt_vars: PromptVars`
     """
 
     def __init__(
@@ -150,7 +152,7 @@ class AssistantAgent:
             return env_url
         # 2) if inside container, prefer service DNS
         if cls._inside_container():
-            return "http://mem0:8000"
+            return "http://mem0:8001"
         # 3) host default uses published port (default 8001)
         port = os.getenv("MEM0_PORT", "8001")
         return f"http://localhost:{port}"
@@ -240,7 +242,16 @@ class AssistantAgent:
         save_mem0: bool = False,
         mem_k: int = 5,
         system_prompt: Optional[str] = None,
+        prompt_vars: Optional[PromptVars] = None,  # ← Langfuse Prompt Management controls + vars
     ) -> str:
+        """
+        Run a turn.
+
+        - `system_prompt`: optional one-off system prompt override (persists after this call).
+        - `prompt_vars`: optional Langfuse Prompt Management (PromptVars). If provided and it
+          contains a `prompt_name`, the underlying client will fetch/compile the managed prompt,
+          set the compiled system message, and prepend its compiled 'user' template text to this turn.
+        """
         # per-turn correlation id
         self._turn_counter += 1
         if TURN_ID:
@@ -299,11 +310,19 @@ class AssistantAgent:
         # 3) LLM call
         model_name = self._model_for_logs
         in_chars = len(content)
+
+        # payload logging
         if self._log_llm_payload:
             logger.info(
                 f"[llm] → model={model_name} timeout={self._llm_timeout_s} "
                 f"mems={len(memories)} notes={len(notes)} input_chars={in_chars}"
             )
+            if prompt_vars and (prompt_vars.prompt_name or prompt_vars.prompt_version):
+                logger.debug(
+                    "[llm] prompt-mgmt: "
+                    f"name={prompt_vars.prompt_name!r} label={prompt_vars.prompt_label!r} "
+                    f"version={prompt_vars.prompt_version!r} type={prompt_vars.prompt_type!r}"
+                )
             preview = content[: self._log_llm_max_chars]
             if len(content) > self._log_llm_max_chars:
                 preview += "…"
@@ -316,13 +335,16 @@ class AssistantAgent:
 
         t_llm0 = time.perf_counter()
         try:
+            # Prefer the AdkToolClient's ainvoke wrapper to pass prompt_vars cleanly
+            coro = self.client.ainvoke(
+                content,
+                system_prompt=system_prompt,
+                prompt_vars=prompt_vars,
+            )
             if self._llm_timeout_s and self._llm_timeout_s > 0:
-                reply = await asyncio.wait_for(
-                    self.client.run_async(content, system_prompt=system_prompt),
-                    timeout=self._llm_timeout_s,
-                )
+                reply = await asyncio.wait_for(coro, timeout=self._llm_timeout_s)
             else:
-                reply = await self.client.run_async(content, system_prompt=system_prompt)
+                reply = await coro
         except asyncio.TimeoutError:
             logger.error(f"[llm] ✖ timeout after {self._llm_timeout_s:.1f}s for model={model_name}")
             reply = "Sorry—my response took too long. Please try again, or ask me to be briefer."
@@ -372,6 +394,10 @@ class AssistantAgent:
             "notes": len(notes),
             "input_chars": in_chars,
             "output_chars": out_chars,
+            # Optional visibility for managed prompts:
+            "prompt_name": getattr(prompt_vars, "prompt_name", None) if prompt_vars else None,
+            "prompt_version": getattr(prompt_vars, "prompt_version", None) if prompt_vars else None,
+            "prompt_label": getattr(prompt_vars, "prompt_label", None) if prompt_vars else None,
         }
         logger.info(
             "[time_consume] "

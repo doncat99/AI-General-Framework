@@ -1,5 +1,5 @@
 # Mem0 service: Python slim
-FROM python:3.13.7-slim-bookworm
+FROM python:3.11.14-slim-bookworm
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app
@@ -16,7 +16,7 @@ RUN pip install "mem0ai[graph]"==0.1.118
 RUN pip install ollama==0.6.0
 
 # Install additional dependencies for vector databases and API
-RUN pip install loguru==0.7.3 pydantic==2.12.3 chromadb==1.2.0 fastapi==0.116.2 uvicorn==0.35.0
+RUN pip install loguru==0.7.3 pydantic==2.12.3 chromadb==1.2.0 "fastapi[all]"==0.116.2 uvloop==0.22.1
 
 # Recreate package path `gateway.mem0` in the image and copy THIS folder
 # (compose build context should be ./gateway/mem0)

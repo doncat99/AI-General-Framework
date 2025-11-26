@@ -1,0 +1,54 @@
+# ========= processing toggles =========
+enable_header_footer_detection: true
+enable_label_correction: false
+
+# ========= exporters (what to emit) =========
+export_deep_json_report: true
+export_doc_json: true
+export_domtree_json: false
+export_markdown: true
+
+# ========= folders / artifacts =========
+# Single source of truth for where exporters should drop side files (images, csvs, etc.)
+# All exporters read this from options; no hard-coded string in code.
+domtree_artifacts_folder: "artifacts"
+
+# ========= parsing / OCR / layout knobs =========
+# Whether to use OCR at all (ONNX/PP-OCR via RapidOCR pipeline)
+do_ocr: true
+
+# OCR engine & cache (leave defaults unless you know you want something else)
+ocr_engine_name: "onnxruntime"
+ocr_cache_dir: ".ocr_cache"
+
+# If you are parsing tables, detect full table structure
+do_table_structure: true
+
+# Optional: refine cell matching in table reconstruction
+do_cell_matching: true
+
+# rasterization scale factor for images (impacts OCR/table detection accuracy and speed)
+image_scale: 2.0
+
+# ========= pipelines / backends / formats =========
+# mapping by broad input family
+backends_map:
+  pdf: "docling_parse_v2"
+  image: "docling_parse_v2"
+
+# allowed inputs (file extensions bucketed by family in your converter)
+allowed_input_types: ["pdf", "image", "docx", "html", "pptx", "asciidoc", "md"]
+
+# Optional “mode” flag (some converters look for this; keep "standard" unless you added modes)
+mode: "standard"
+
+# ========= performance =========
+# Runs of layout/ocr often benefit from single-thread determinism for reproducibility.
+# Also avoids over-subscribing ONNXRuntime on macOS.
+num_threads: 4
+use_accelerator: true
+
+# ========= header/section heuristics (post-processors) =========
+# These are read by LabelCorrectionProcessor / DomTreeExporter in plugins.py
+label_min_header_score: 4.5
+label_merge_distance_px: 50.0

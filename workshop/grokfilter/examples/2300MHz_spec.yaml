@@ -1,0 +1,25 @@
+name: "2300MHz 5G滤波器需求"
+center_frequency_mhz: 2300
+bandwidth_mhz: 60
+return_loss_db: 18
+max_insert_loss_db: 1.15
+rejection_bands:
+  - start: 2180
+    stop: 2189
+    min_rejection_db: 50
+  - start: 2190
+    stop: 2200
+    min_rejection_db: 27
+  - start: 2400
+    stop: 2484
+    min_rejection_db: 75
+  - start: 2485
+    stop: 2500
+    min_rejection_db: 50
+  - start: 2501
+    stop: 2700
+    min_rejection_db: 80
+preferences:
+  max_order: 12
+  prefer_symmetric_zeros: true
+  allow_n_plus_one: true

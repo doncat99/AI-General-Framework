@@ -21,11 +21,12 @@ agent = Agent(
     name="hello_agent",
     model=LiteLlm(
         # Specify the OpenRouter model using 'openrouter/' prefix
-        model="openrouter/anthropic/claude-sonnet-4",
+        # model="openrouter/anthropic/claude-sonnet-4",
+        model="openrouter/openai/gpt-4.1-mini",
         # Explicitly provide the API key from environment variables
-        api_key=config.OPEN_ROUTER_API_KEY,
+        api_key=config.OPENROUTER_API_KEY,
         # Explicitly provide the OpenRouter API base URL
-        api_base=config.OPEN_ROUTER_BASE_URL,
+        api_base=config.OPENROUTER_BASE_URL,
     ),
     instruction="Always greet using the say_hello tool.",
     tools=[say_hello],

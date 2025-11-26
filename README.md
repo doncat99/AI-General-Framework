@@ -35,7 +35,7 @@
 
 ```bash
 # Python 3.13 recommended
-poetry install
+poetry update
 # or use your own venv + pip
 ```
 

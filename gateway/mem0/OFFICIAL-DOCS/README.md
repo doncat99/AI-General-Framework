@@ -201,6 +201,6 @@ Quick check (PowerShell):
 
 ```
 $add = @{ message='remember that user prefers detailed technical analysis'; user_id='verification_test' } | ConvertTo-Json
-Invoke-WebRequest -Method Post -ContentType 'application/json' -Uri 'http://localhost:8000/add' -Body $add | Select-Object -Expand Content
-Invoke-RestMethod 'http://localhost:8000/memories?user_id=verification_test' | ConvertTo-Json -Depth 10
+Invoke-WebRequest -Method Post -ContentType 'application/json' -Uri 'http://localhost:8001/add' -Body $add | Select-Object -Expand Content
+Invoke-RestMethod 'http://localhost:8001/memories?user_id=verification_test' | ConvertTo-Json -Depth 10
 ```
