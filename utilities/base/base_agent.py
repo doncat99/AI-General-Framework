@@ -70,12 +70,16 @@ class BaseAgent:
         session_id: str = "default_session",
         use_cache: bool = True,
         cache_dir: str = ".cache",
+        api_key: Optional[str] = config.OPENROUTER_API_KEY,
+        base_url: Optional[str] = config.OPENROUTER_BASE_URL,
     ):
         self.app_name = app_name
         self.user_id = user_id
         self.session_id = session_id
         self.use_cache = use_cache
         self.cache_dir = cache_dir
+        self.api_key = api_key
+        self.base_url = base_url
 
         # Persist config for rebuilds or in-place updates
         self._agent_name = agent_name
@@ -126,8 +130,8 @@ class BaseAgent:
             name=self._agent_name,
             model=LiteLlm(
                 model=model_id,
-                api_key=config.OPENROUTER_API_KEY,
-                api_base=config.OPENROUTER_BASE_URL,
+                api_key=self.api_key,
+                api_base=self.base_url,
             ),
             instruction=self._instruction,
             tools=self.tools,
