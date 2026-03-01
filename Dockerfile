@@ -1,5 +1,5 @@
 # ---------- Base image ----------
-FROM python:3.11.14-slim-bookworm
+FROM python:3.14.3-slim-bookworm
 
 ENV PYTHONUNBUFFERED=1
 WORKDIR /app
